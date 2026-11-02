@@ -113,12 +113,9 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 				return meshInstance;
 			}
 
-			Vector<Vector3> normals = get_attribute_from_primitive<Vector3>(primitive, model, "NORMAL", [&](Vector3& normal) {
-				// We will Invert all normal IF the cull mode is front
-				if (mat.doubleSided) {
-					normal *= -1.0;
-				}
-			});
+			// Normals are used as authored: the index buffer is rewound to Godot's convention below,
+			// so front faces are drawn as front faces and Godot only flips normals for back faces.
+			Vector<Vector3> normals = get_attribute_from_primitive<Vector3>(primitive, model, "NORMAL");
 
 			Vector<Vector2> textureCoords = get_attribute_from_primitive<Vector2>(primitive, model, "TEXCOORD_0", [](Vector2& uv) {
 				uv = uv.clamp(Vector2(0, 0), Vector2(1, 1));
@@ -144,6 +141,7 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 					indexBuffer.push_back(i);
 				}
 			}
+			reverse_winding(primitive.mode, indexBuffer);
 
 			// Required mesh data
 			Array arrays;
@@ -334,9 +332,28 @@ glm::dmat4x4 CesiumGDModelLoader::apply_gltf_up_axis_transform(const CesiumGltf:
 	return rootTransform;
 }
 
+void CesiumGDModelLoader::reverse_winding(int32_t mode, Vector<int32_t>& indices)
+{
+	// glTF front faces are counter-clockwise, Godot's are clockwise.
+	if (mode == CesiumGltf::MeshPrimitive::Mode::TRIANGLES) {
+		int32_t* data = indices.ptrw();
+		for (int64_t i = 0; i + 2 < indices.size(); i += 3) {
+			std::swap(data[i + 1], data[i + 2]);
+		}
+	}
+	else if (mode == CesiumGltf::MeshPrimitive::Mode::TRIANGLE_STRIP && !indices.is_empty()) {
+		// A leading degenerate triangle shifts the strip's parity, which flips every triangle.
+		indices.insert(0, indices[0]);
+	}
+}
+
 Vector<int32_t> CesiumGDModelLoader::get_index_buffer_from_primitive(const CesiumGltf::MeshPrimitive& primitive, const CesiumGltf::Model& model, Error* error)
 {
 	Vector<int32_t> indices;
+	// Non-indexed primitive: the caller generates a sequential index buffer.
+	if (primitive.indices < 0 || primitive.indices >= static_cast<int32_t>(model.accessors.size())) {
+		return indices;
+	}
 
 	const CesiumGltf::Accessor& indexAccessor = model.accessors[primitive.indices];
 	const CesiumGltf::BufferView& indexBufferView = model.bufferViews[indexAccessor.bufferView];
@@ -437,7 +454,9 @@ Error CesiumGDModelLoader::copy_material_properties(const CesiumGltf::Material& 
 {
 	set_colors_and_texture(cesiumMaterial, godotMaterial, modelReference);
 
-	BaseMaterial3D::CullMode cullMode = cesiumMaterial.doubleSided ? BaseMaterial3D::CULL_DISABLED : BaseMaterial3D::CULL_FRONT;
+	// Index buffers are rewound to Godot's clockwise front faces (see reverse_winding), so the
+	// usual back-face culling applies.
+	BaseMaterial3D::CullMode cullMode = cesiumMaterial.doubleSided ? BaseMaterial3D::CULL_DISABLED : BaseMaterial3D::CULL_BACK;
 	BaseMaterial3D::Transparency alphaMode;
 
 	if (cesiumMaterial.alphaMode == CesiumGltf::Material::AlphaMode::OPAQUE) {

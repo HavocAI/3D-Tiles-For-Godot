@@ -58,29 +58,21 @@ void Cesium3DTile::add_metadata(const CesiumGltf::Model* model, const CesiumGltf
 	}
 }
 
-Ref<ConcavePolygonShape3D> Cesium3DTile::create_trimesh_shape_inverse_winding()  {
-	const auto& faces = this->get_mesh()->get_faces();
+Ref<ConcavePolygonShape3D> Cesium3DTile::create_trimesh_shape()  {
+	// The mesh is already wound with Godot's clockwise front faces (CesiumGDModelLoader::reverse_winding),
+	// which is also what one-sided concave collision expects.
+	const PackedVector3Array faces = this->get_mesh()->get_faces();
 	if (faces.size() == 0) {
 		return Ref<ConcavePolygonShape3D>();
 	}
 
-	PackedVector3Array facePoints;
-	facePoints.resize(faces.size());
-
-	for (int i = 0; i < facePoints.size(); i += 3) {
-		// Let's reverse it
-		facePoints[i]     = faces[i + 2];
-		facePoints[i + 1] = faces[i + 1];
-		facePoints[i + 2] = faces[i];
-	}
-
 	Ref<ConcavePolygonShape3D> shape = memnew(ConcavePolygonShape3D);
-	shape->set_faces(facePoints);
+	shape->set_faces(faces);
 	return shape;
 }
 
 Node* Cesium3DTile::create_collision_node_custom_trimesh() {
-	Ref<ConcavePolygonShape3D> shape = this->create_trimesh_shape_inverse_winding();
+	Ref<ConcavePolygonShape3D> shape = this->create_trimesh_shape();
 	if (shape.is_null()) {
 		return nullptr;
 	}

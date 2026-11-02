@@ -39,7 +39,7 @@ public:
 	
 private:
 
-	Ref<ConcavePolygonShape3D> create_trimesh_shape_inverse_winding();	
+	Ref<ConcavePolygonShape3D> create_trimesh_shape();
 
 	Node* create_collision_node_custom_trimesh();
 

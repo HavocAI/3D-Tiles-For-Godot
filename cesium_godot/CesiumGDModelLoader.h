@@ -117,6 +117,9 @@ private:
 #endif
 	}
 
+	/// @brief Converts glTF's counter-clockwise front faces to Godot's clockwise ones, in place.
+	static void reverse_winding(int32_t mode, Vector<int32_t>& indices);
+
 	static Vector<int32_t> get_index_buffer_from_primitive(const CesiumGltf::MeshPrimitive& primitive, const CesiumGltf::Model& model, Error* error);
 
 	static void set_colors_and_texture(const CesiumGltf::Material& cesiumMaterial, Ref<StandardMaterial3D>& godotMaterial, const CesiumGltf::Model& modelReference);
