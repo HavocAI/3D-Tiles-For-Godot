@@ -50,7 +50,8 @@ CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources> Go
 		}
 
 		Error err;
-		Ref<ArrayMesh> meshData = CesiumGDModelLoader::generate_meshes_from_model(*movedModel, &err);
+		std::vector<CesiumGDSurfaceInfo> surfaces;
+		Ref<ArrayMesh> meshData = CesiumGDModelLoader::generate_meshes_from_model(*movedModel, &err, &surfaces);
 
 		if (err != Error::OK) {
 			String errorMsg = String("Error generating meshes for tile ") + REFLECT_ERR_NAME(err);
@@ -63,6 +64,7 @@ CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources> Go
 
 		Cesium3DTile* instance = memnew(Cesium3DTile);
 		instance->set_mesh(meshData);
+		instance->set_surface_info(std::move(surfaces));
 
 		// Check if model has nodes before accessing
 		if (movedModel->nodes.empty()) {
@@ -176,67 +178,82 @@ void GodotPrepareRenderResources::free(Tile& tile, void* pLoadThreadResult, void
 	this->m_tileset->call_deferred("free_tile", instance, hash);
 }
 
+static Cesium3DTile* get_tile_instance(const Tile& tile)
+{
+	const Cesium3DTilesSelection::TileRenderContent* renderContent = tile.getContent().getRenderContent();
+	if (renderContent == nullptr) return nullptr;
+	return static_cast<Cesium3DTile*>(renderContent->getRenderResources());
+}
+
 void GodotPrepareRenderResources::attachRasterInMainThread(const Tile& tile, int32_t overlayTextureCoordinateID, const CesiumRasterOverlays::RasterOverlayTile& rasterTile, void* pMainThreadRendererResources, const glm::dvec2& translation, const glm::dvec2& scale)
 {
-	const Cesium3DTilesSelection::TileContent& content = tile.getContent();
-	void* rawRenderResources = content.getRenderContent()->getRenderResources();
-	auto* meshInstance = static_cast<Cesium3DTile*>(rawRenderResources);
-	if (meshInstance == nullptr) return;
+	Cesium3DTile* meshInstance = get_tile_instance(tile);
+	if (meshInstance == nullptr || pMainThreadRendererResources == nullptr) return;
+	if (overlayTextureCoordinateID < 0 || overlayTextureCoordinateID > 1) return;
 
-	Ref<ImageTexture> godotTexture = static_cast<ImageTexture*>(pMainThreadRendererResources);
-	std::string key = rasterTile.getOverlay().getName();
-
-	//Get all primitives (surfaces) in the mesh tile
-	uint32_t primitiveIndex = 0;
-	const CesiumGltf::Model& model = content.getRenderContent()->getModel();
-	std::string overlayAttributeName = "_CESIUMOVERLAY_" + std::to_string(overlayTextureCoordinateID);
-
+	const Ref<ImageTexture>& godotTexture = *static_cast<Ref<ImageTexture>*>(pMainThreadRendererResources);
+	const CesiumGltf::Model& model = tile.getContent().getRenderContent()->getModel();
 	Ref<ArrayMesh> arrayMesh = meshInstance->get_mesh();
+	if (arrayMesh.is_null()) return;
 
-	const Vector2 scaleFactors = CesiumMathUtils::from_glm_vec2(scale);
-	const Vector2 translationOffsets = CesiumMathUtils::from_glm_vec2(translation);
-	
-	for (const CesiumGltf::Mesh& mesh : model.meshes) {
-		for (const CesiumGltf::MeshPrimitive& primitive : mesh.primitives) {
-			// We will allow this use of auto for now... for now
-			auto attributeIt = primitive.attributes.find(overlayAttributeName);
-			if (attributeIt == primitive.attributes.end()) {
-				continue;
-			}
+	// Raster coordinates are overlayUV * scale + translation, with V flipped for the image.
+	const Vector3 uvScale(scale.x, -scale.y, 1.0);
+	const Vector3 uvOffset(translation.x, 1.0 - translation.y, 0.0);
 
-			Array arrays = arrayMesh->surface_get_arrays(primitiveIndex);
+	// Only swap materials: the surfaces already carry the overlay coordinates (see
+	// CesiumGDModelLoader::generate_meshes_from_model), so no surface is added or rebuilt.
+	const std::vector<CesiumGDSurfaceInfo>& surfaces = meshInstance->get_surface_info();
+	const int32_t surfaceCount = std::min<int32_t>(surfaces.size(), arrayMesh->get_surface_count());
+	for (int32_t surfaceIndex = 0; surfaceIndex < surfaceCount; surfaceIndex++) {
+		const CesiumGDSurfaceInfo& info = surfaces[surfaceIndex];
+		const int8_t uvChannel = info.overlayUvChannel[overlayTextureCoordinateID];
+		if (uvChannel == 0) continue;
 
-			int32_t uvIndex = attributeIt->second;
-
-			Ref<StandardMaterial3D> godotMaterial = memnew(StandardMaterial3D);
-			const CesiumGltf::Material& mat = model.materials.at(primitive.material);
-			Error err = CesiumGDModelLoader::copy_material_properties(mat, godotMaterial, model);
-			godotMaterial->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, godotTexture);
-			godotMaterial->set_uv1_scale(Vector3(scale.x, -scale.y, 1.0));
-			godotMaterial->set_uv1_offset(Vector3(translation.x, 1 - translation.y, 1.0));
-			if (err != Error::OK) {
-				ERR_PRINT(String("Could not set texture for Raster Overlay, error: ") + REFLECT_ERR_NAME(err));
-				continue;
-			}
-
-			//Apply the texture to the surface
-			err = CesiumGDModelLoader::apply_surface_to_mesh(primitive, arrayMesh, arrays);
-			if (err != Error::OK) {
-				ERR_PRINT(String("Could not set texture for Raster Overlay, error: ") + REFLECT_ERR_NAME(err));
-				continue;
-			}
-
-			arrayMesh->surface_set_material(primitiveIndex, godotMaterial);
-
-			primitiveIndex++;
+		Ref<StandardMaterial3D> overlayMaterial;
+		Ref<StandardMaterial3D> baseMaterial = meshInstance->get_base_material(surfaceIndex);
+		if (baseMaterial.is_valid()) {
+			overlayMaterial = baseMaterial->duplicate();
 		}
+		else {
+			// The base is a shader material (KHR_texture_transform); start from the glTF material.
+			const CesiumGltf::MeshPrimitive& primitive = model.meshes[info.meshIndex].primitives[info.primitiveIndex];
+			overlayMaterial.instantiate();
+			CesiumGDModelLoader::copy_material_properties(CesiumGDModelLoader::get_primitive_material(model, primitive), overlayMaterial, model);
+		}
+
+		if (uvChannel == 1) {
+			overlayMaterial->set_texture(BaseMaterial3D::TEXTURE_ALBEDO, godotTexture);
+			overlayMaterial->set_uv1_scale(uvScale);
+			overlayMaterial->set_uv1_offset(uvOffset);
+		}
+		else {
+			// UV holds the model's own texture coordinates, so draw the overlay as a detail layer on UV2.
+			overlayMaterial->set_feature(BaseMaterial3D::FEATURE_DETAIL, true);
+			overlayMaterial->set_detail_uv(BaseMaterial3D::DETAIL_UV_2);
+			overlayMaterial->set_detail_blend_mode(BaseMaterial3D::BLEND_MODE_MIX);
+			overlayMaterial->set_texture(BaseMaterial3D::TEXTURE_DETAIL_ALBEDO, godotTexture);
+			overlayMaterial->set_uv2_scale(uvScale);
+			overlayMaterial->set_uv2_offset(uvOffset);
+		}
+		arrayMesh->surface_set_material(surfaceIndex, overlayMaterial);
 	}
-	meshInstance->set_mesh(arrayMesh);
 }
 
 void GodotPrepareRenderResources::detachRasterInMainThread(const Tile& tile, int32_t overlayTextureCoordinateID, const CesiumRasterOverlays::RasterOverlayTile& rasterTile, void* pMainThreadRendererResources) noexcept
 {
+	Cesium3DTile* meshInstance = get_tile_instance(tile);
+	if (meshInstance == nullptr) return;
+	if (overlayTextureCoordinateID < 0 || overlayTextureCoordinateID > 1) return;
+	Ref<ArrayMesh> arrayMesh = meshInstance->get_mesh();
+	if (arrayMesh.is_null()) return;
 
+	// Put back the surfaces' own materials; a replacement raster tile is attached afterwards.
+	const std::vector<CesiumGDSurfaceInfo>& surfaces = meshInstance->get_surface_info();
+	const int32_t surfaceCount = std::min<int32_t>(surfaces.size(), arrayMesh->get_surface_count());
+	for (int32_t surfaceIndex = 0; surfaceIndex < surfaceCount; surfaceIndex++) {
+		if (surfaces[surfaceIndex].overlayUvChannel[overlayTextureCoordinateID] == 0) continue;
+		arrayMesh->surface_set_material(surfaceIndex, meshInstance->get_base_material(surfaceIndex));
+	}
 }
 
 void* GodotPrepareRenderResources::prepareRasterInLoadThread(CesiumGltf::ImageAsset& image, const std::any& rendererOptions)
@@ -248,15 +265,20 @@ void* GodotPrepareRenderResources::prepareRasterInLoadThread(CesiumGltf::ImageAs
 
 void* GodotPrepareRenderResources::prepareRasterInMainThread(CesiumRasterOverlays::RasterOverlayTile& rasterTile, void* pLoadThreadResult)
 {
-	const CesiumGltf::ImageAsset& imageCesium = *rasterTile.getImage().get();
-	Ref<ImageTexture> godotTexture = CesiumGDTextureLoader::load_image_texture(imageCesium, false, true);
-	godotTexture->reference();
-	return static_cast<void*>(godotTexture.ptr());
+	const CesiumGltf::ImageAsset* imageCesium = rasterTile.getImage().get();
+	if (imageCesium == nullptr || imageCesium->width <= 0 || imageCesium->height <= 0) {
+		return nullptr;
+	}
+	const bool hasMipMaps = !imageCesium->mipPositions.empty();
+	Ref<ImageTexture> godotTexture = CesiumGDTextureLoader::load_image_texture(*imageCesium, false, hasMipMaps);
+	if (godotTexture.is_null()) {
+		return nullptr;
+	}
+	// Owned by cesium-native until freeRaster.
+	return new Ref<ImageTexture>(godotTexture);
 }
 
 void GodotPrepareRenderResources::freeRaster(const CesiumRasterOverlays::RasterOverlayTile& rasterTile, void* pLoadThreadResult, void* pMainThreadResult) noexcept
 {
-	auto* rasterMainThreadTexture = static_cast<ImageTexture*>(pMainThreadResult);
-	if (rasterMainThreadTexture == nullptr) return;
-	rasterMainThreadTexture->unreference();
+	delete static_cast<Ref<ImageTexture>*>(pMainThreadResult);
 }

@@ -191,6 +191,8 @@ private:
 protected:
 	static void _bind_methods();
 
+	void _notification(int p_what);
+
 	void _get_property_list(List<PropertyInfo>* properties) const;
 
 	bool _set(const StringName& p_name, const Variant& p_property);

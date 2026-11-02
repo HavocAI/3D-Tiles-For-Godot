@@ -24,9 +24,21 @@ class MeshInstance3D;
 #include <CesiumGltfReader/GltfReader.h>
 
 
+/// @brief Where a glTF primitive ended up in the generated ArrayMesh.
+struct CesiumGDSurfaceInfo {
+	int32_t meshIndex = -1;
+	int32_t primitiveIndex = -1;
+	/// For _CESIUMOVERLAY_0 and _CESIUMOVERLAY_1: the Godot UV channel holding them (1 = UV, 2 = UV2), or 0.
+	int8_t overlayUvChannel[2] = { 0, 0 };
+};
+
 class CesiumGDModelLoader {
 public:
-	static Ref<ArrayMesh> generate_meshes_from_model(const CesiumGltf::Model& readerResult, Error* error);
+	/// @param surfaces If given, receives one entry per surface added to the mesh, in surface order.
+	static Ref<ArrayMesh> generate_meshes_from_model(const CesiumGltf::Model& readerResult, Error* error, std::vector<CesiumGDSurfaceInfo>* surfaces = nullptr);
+
+	/// @brief The primitive's material, or glTF's default material when it has none.
+	static const CesiumGltf::Material& get_primitive_material(const CesiumGltf::Model& model, const CesiumGltf::MeshPrimitive& primitive);
 
 	static glm::dmat4 apply_rtc_center(const CesiumGltf::Model& gltf, const glm::dmat4x4& rootTransform);
 

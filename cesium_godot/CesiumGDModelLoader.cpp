@@ -85,33 +85,45 @@ static Ref<Shader> load_texture_transform_shader() {
 	return shader;
 }
 
-Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf::Model& model, Error* error)
-{	
-	std::vector<CesiumGltf::Mesh> gltfMeshes = model.meshes;
+const CesiumGltf::Material& CesiumGDModelLoader::get_primitive_material(const CesiumGltf::Model& model, const CesiumGltf::MeshPrimitive& primitive)
+{
+	static const CesiumGltf::Material defaultMaterial{};
+	if (primitive.material < 0 || primitive.material >= static_cast<int32_t>(model.materials.size())) {
+		return defaultMaterial;
+	}
+	return model.materials[primitive.material];
+}
 
-	std::unordered_map<int32_t, Ref<StandardMaterial3D>> materialsMap;
+Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf::Model& model, Error* error, std::vector<CesiumGDSurfaceInfo>* surfaces)
+{	
+	const std::vector<CesiumGltf::Mesh>& gltfMeshes = model.meshes;
 
 	Ref<ArrayMesh> meshInstance = memnew(ArrayMesh);
 
 	*error = Error::OK;
-	for (const CesiumGltf::Mesh& mesh : gltfMeshes) {
-		int32_t surfaceIndex = 0;
-		for (const CesiumGltf::MeshPrimitive& primitive : mesh.primitives) {
+	for (size_t meshIndex = 0; meshIndex < gltfMeshes.size(); meshIndex++) {
+		const CesiumGltf::Mesh& mesh = gltfMeshes[meshIndex];
+		for (size_t primitiveIndex = 0; primitiveIndex < mesh.primitives.size(); primitiveIndex++) {
+			const CesiumGltf::MeshPrimitive& primitive = mesh.primitives[primitiveIndex];
 
 			const CesiumGltf::Model* modelReference = &model;
 
 			// Create the material for the gltf
 			Ref<StandardMaterial3D> godotMaterial = memnew(StandardMaterial3D);
-			const CesiumGltf::Material& mat = modelReference->materials.at(primitive.material);
+			const CesiumGltf::Material& mat = get_primitive_material(model, primitive);
 			copy_material_properties(mat, godotMaterial, *modelReference);
 
 			// Then copy all the other properties defined in the file
 			Vector<Vector3> vertices = get_attribute_from_primitive<Vector3>(primitive, model, "POSITION");
 
 			if (vertices.is_empty()) {
-				ERR_PRINT("Mesh did not have a vertex buffer!");
-				return meshInstance;
+				ERR_PRINT("Mesh primitive did not have a vertex buffer, skipping it");
+				continue;
 			}
+
+			CesiumGDSurfaceInfo surfaceInfo;
+			surfaceInfo.meshIndex = static_cast<int32_t>(meshIndex);
+			surfaceInfo.primitiveIndex = static_cast<int32_t>(primitiveIndex);
 
 			// Normals are used as authored: the index buffer is rewound to Godot's convention below,
 			// so front faces are drawn as front faces and Godot only flips normals for back faces.
@@ -122,15 +134,20 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 			});
 			Vector<Vector2> textureCoords1 = get_attribute_from_primitive<Vector2>(primitive, model, "TEXCOORD_1");
 
-			// Try to get Cesium Overlays if the texcoords are not updated
+			// Raster overlay coordinates go in whichever UV channel the model leaves free:
+			// _CESIUMOVERLAY_0 in UV when there is no TEXCOORD_0, otherwise in UV2.
+			const auto clampUv = [](Vector2& uv) { uv = uv.clamp(Vector2(0, 0), Vector2(1, 1)); };
 			if (textureCoords.is_empty()) {
-				textureCoords = get_attribute_from_primitive<Vector2>(primitive, model, "_CESIUMOVERLAY_0", [](Vector2& uv) {
-	        uv = uv.clamp(Vector2(0, 0), Vector2(1, 1));
-				});
+				textureCoords = get_attribute_from_primitive<Vector2>(primitive, model, "_CESIUMOVERLAY_0", clampUv);
+				if (!textureCoords.is_empty()) surfaceInfo.overlayUvChannel[0] = 1;
+			}
+			if (textureCoords1.is_empty() && surfaceInfo.overlayUvChannel[0] == 0) {
+				textureCoords1 = get_attribute_from_primitive<Vector2>(primitive, model, "_CESIUMOVERLAY_0", clampUv);
+				if (!textureCoords1.is_empty()) surfaceInfo.overlayUvChannel[0] = 2;
 			}
 			if (textureCoords1.is_empty()) {
-				textureCoords1 = get_attribute_from_primitive<Vector2>(primitive, model, "_CESIUMOVERLAY_1", [](Vector2& uv) {
-    		});
+				textureCoords1 = get_attribute_from_primitive<Vector2>(primitive, model, "_CESIUMOVERLAY_1");
+				if (!textureCoords1.is_empty()) surfaceInfo.overlayUvChannel[1] = 2;
 			}
 
 			Vector<int32_t> indexBuffer = get_index_buffer_from_primitive(primitive, model, error);
@@ -227,11 +244,13 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 				}
 			}
 
+			// Surfaces accumulate across all meshes and primitives of the model.
+			const int32_t surfaceIndex = meshInstance->get_surface_count();
 			*error = apply_surface_to_mesh(primitive, meshInstance, arrays);
 			meshInstance->surface_set_material(surfaceIndex, finalMaterial);
-			materialsMap.insert_or_assign(primitive.material, finalMaterial);
-
-			surfaceIndex++;
+			if (surfaces != nullptr) {
+				surfaces->push_back(surfaceInfo);
+			}
 		}
 	}
 	return meshInstance;

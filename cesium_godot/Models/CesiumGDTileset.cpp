@@ -235,6 +235,15 @@ Cesium3DTileset::~Cesium3DTileset() {
 	// Trivial, but GCC complains if this is not in the implementation file
 }
 
+void Cesium3DTileset::_notification(int p_what) {
+	if (p_what == NOTIFICATION_PREDELETE) {
+		// Destroying the cesium tileset unloads every tile, which calls back into the renderer
+		// resources (detaching rasters, freeing tiles) with pointers to this node's tile children.
+		// Do it now, before Node frees those children.
+		this->m_activeTileset.reset();
+	}
+}
+
 void Cesium3DTileset::set_maximum_screen_space_error(real_t error)
 {
 	this->m_tilesetConfig->options.maximumScreenSpaceError = error;

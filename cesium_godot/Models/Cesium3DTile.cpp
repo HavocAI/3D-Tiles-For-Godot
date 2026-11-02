@@ -85,6 +85,27 @@ Node* Cesium3DTile::create_collision_node_custom_trimesh() {
 	return staticBody;
 }
 
+void Cesium3DTile::set_surface_info(std::vector<CesiumGDSurfaceInfo>&& surfaces) {
+	this->m_surfaces = std::move(surfaces);
+	this->m_baseMaterials.clear();
+	Ref<Mesh> mesh = this->get_mesh();
+	const int32_t count = mesh.is_valid() ? mesh->get_surface_count() : 0;
+	for (int32_t i = 0; i < count; i++) {
+		this->m_baseMaterials.push_back(mesh->surface_get_material(i));
+	}
+}
+
+const std::vector<CesiumGDSurfaceInfo>& Cesium3DTile::get_surface_info() const {
+	return this->m_surfaces;
+}
+
+Ref<Material> Cesium3DTile::get_base_material(int32_t surfaceIndex) const {
+	if (surfaceIndex < 0 || surfaceIndex >= static_cast<int32_t>(this->m_baseMaterials.size())) {
+		return Ref<Material>();
+	}
+	return this->m_baseMaterials[surfaceIndex];
+}
+
 const Dictionary& Cesium3DTile::get_metadata_table(int32_t index) const {
 	return this->m_metadata.get_table(index);
 }
