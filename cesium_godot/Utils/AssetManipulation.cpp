@@ -67,17 +67,20 @@ CesiumGDCreditSystem* Godot3DTiles::AssetManipulation::find_or_create_credit_sys
 		return result;
 	}
 	
-	result = memnew(CesiumGDCreditSystem);
 	CesiumGeoreference* globe = find_node_in_scene<CesiumGeoreference>(root);
 	ERR_FAIL_COND_V_MSG(globe == nullptr, nullptr, "No CesiumGeoreference found in scene, please add one manually or with the Cesium Panel!");
+	// The georeference's parent need not be a Node3D (it can be a plain Node or the root window).
+	Node* parent = globe->get_parent();
+	ERR_FAIL_COND_V_MSG(parent == nullptr, nullptr, "The CesiumGeoreference must be inside the scene tree to show data attribution");
+	result = memnew(CesiumGDCreditSystem);
 	constexpr bool readableName = true;
 	if (deferred) {
-		globe->get_parent_node_3d()->call_deferred("add_child", result, readableName, godot::Node::INTERNAL_MODE_FRONT);
-		result->call_deferred("set_owner", globe->get_parent_node_3d());
+		parent->call_deferred("add_child", result, readableName, godot::Node::INTERNAL_MODE_FRONT);
+		result->call_deferred("set_owner", parent);
 	}
 	else {
-		globe->get_parent_node_3d()->add_child(result, readableName, godot::Node::INTERNAL_MODE_FRONT);
-		result->set_owner(globe->get_parent_node_3d());
+		parent->add_child(result, readableName, godot::Node::INTERNAL_MODE_FRONT);
+		result->set_owner(parent);
 	}
 	return result;
 }

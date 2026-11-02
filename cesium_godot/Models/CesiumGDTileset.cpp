@@ -639,7 +639,10 @@ Cesium3DTilesSelection::TilesetExternals Cesium3DTileset::create_tileset_externa
 	CesiumAsync::AsyncSystem asyncSystem(taskProcessor);
 	auto renderResourcesProvider = std::make_shared<GodotPrepareRenderResources>(this);
 	auto creditSystem = std::make_shared<CesiumUtility::CreditSystem>();
-	CesiumGDCreditSystem::get_singleton(this)->add_credit_system(creditSystem);
+	CesiumGDCreditSystem* creditOverlay = CesiumGDCreditSystem::get_singleton(this);
+	if (creditOverlay != nullptr) {
+		creditOverlay->add_credit_system(creditSystem);
+	}
 	
 	Cesium3DTilesSelection::TilesetExternals result {
 		gunzipAccessor,
