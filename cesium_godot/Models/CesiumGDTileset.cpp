@@ -361,12 +361,12 @@ void Cesium3DTileset::update_tileset(const Transform3D& cameraTransform)
 	Viewport* currentViewport = get_viewport();
 	Camera3D* cam = currentViewport->get_camera_3d();
 
-	glm::dvec3 camPos;
+	// cameraTransform is in ECEF axes. With a true origin its origin is the camera's ECEF position.
+	// With a cartographic origin the engine origin sits at the georeference's ECEF point, so the
+	// transform's origin is the camera's offset from that point and is added to it.
+	glm::dvec3 camPos = CesiumMathUtils::to_glm_dvec3(cameraTransform.origin);
 	if (isGeoreferenced) {
-		camPos = this->m_georeference->get_ecef_position();
-	}
-	else {
-		camPos = CesiumMathUtils::to_glm_dvec3(cameraTransform.origin);
+		camPos += this->m_georeference->get_ecef_position();
 	}
 
 	Vector3 cameraDirectionGodot = cameraTransform.basis.get_column(Vector3::AXIS_Z);
