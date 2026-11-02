@@ -40,6 +40,50 @@ using namespace godot;
 
 constexpr int32_t RGBA_CHANNEL_COUNT = 4;
 constexpr int32_t RGB_CHANNEL_COUNT = 3;
+constexpr const char* TEXTURE_TRANSFORM_SHADER_PATH = "res://addons/cesium_godot/shaders/spatial_texture_rotation.gdshader";
+
+// Used when the addon's copy of the shader is missing (e.g. the addon was copied without it).
+constexpr const char* TEXTURE_TRANSFORM_SHADER_CODE = R"(
+shader_type spatial;
+
+uniform sampler2D albedo_texture : source_color;
+uniform vec2 uv_offset = vec2(0.0);
+uniform vec2 uv_scale = vec2(1.0);
+uniform float uv_rotation = 0.0;
+
+vec2 rotate_uv(vec2 uv, float angle) {
+	float s = sin(angle);
+	float c = cos(angle);
+	mat2 rot = mat2(c, -s, s, c);
+	return rot * uv;
+}
+
+void fragment() {
+	vec2 uv = UV;
+	uv *= uv_scale;
+	uv = rotate_uv(uv, uv_rotation);
+	uv += uv_offset;
+	vec4 albedo = texture(albedo_texture, uv);
+	ALBEDO = albedo.rgb;
+	ALPHA = albedo.a;
+}
+)";
+
+/// @brief Loads the KHR_texture_transform shader that ships inside the addon, falling back to the
+/// same code built in. ResourceLoader caches the loaded shader, so this is cheap after the first call.
+static Ref<Shader> load_texture_transform_shader() {
+	ResourceLoader* loader = ResourceLoader::get_singleton();
+	if (loader->exists(TEXTURE_TRANSFORM_SHADER_PATH, "Shader")) {
+		Ref<Shader> shader = loader->load(TEXTURE_TRANSFORM_SHADER_PATH, "Shader");
+		if (shader.is_valid()) {
+			return shader;
+		}
+	}
+	Ref<Shader> shader;
+	shader.instantiate();
+	shader->set_code(TEXTURE_TRANSFORM_SHADER_CODE);
+	return shader;
+}
 
 Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf::Model& model, Error* error)
 {	
@@ -48,40 +92,6 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 	std::unordered_map<int32_t, Ref<StandardMaterial3D>> materialsMap;
 
 	Ref<ArrayMesh> meshInstance = memnew(ArrayMesh);
-
-	Ref<Shader> texture_transform_shader = godot::ResourceLoader::get_singleton()->load("res://Shaders/spatial_texture_rotation.gdshader");
-	texture_transform_shader.instantiate();
-	if (!texture_transform_shader.is_valid()) {
-		texture_transform_shader.instantiate();
-
-		String code = R"(
-		shader_type spatial;
-
-		uniform sampler2D albedo_texture : source_color;
-		uniform vec2 uv_offset = vec2(0.0);
-		uniform vec2 uv_scale = vec2(1.0);
-		uniform float uv_rotation = 0.0;
-
-		vec2 rotate_uv(vec2 uv, float angle) {
-			float s = sin(angle);
-			float c = cos(angle);
-			mat2 rot = mat2(c, -s, s, c);
-			return rot * uv;
-		}
-
-		void fragment() {
-			vec2 uv = UV;
-			uv *= uv_scale;
-			uv = rotate_uv(uv, uv_rotation);
-			uv += uv_offset;
-			vec4 albedo = texture(albedo_texture, uv);
-			ALBEDO = albedo.rgb;
-			ALPHA = albedo.a;
-		}
-		)";
-
-		texture_transform_shader->set_code(code);
-	}
 
 	*error = Error::OK;
 	for (const CesiumGltf::Mesh& mesh : gltfMeshes) {
@@ -189,6 +199,7 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 						scaleVector3 = Vector3(scaleVec[0], scaleVec[1], 1);
 					}
 
+					Ref<Shader> texture_transform_shader = load_texture_transform_shader();
 					if (texture_transform_shader.is_valid()) {
 						Ref<ShaderMaterial> shaderMat;
 						shaderMat.instantiate();
