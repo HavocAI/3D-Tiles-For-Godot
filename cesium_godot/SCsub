@@ -356,6 +356,10 @@ elif (os.name == cesium_build_utils.OS_LINUX and sys.platform != cesium_build_ut
     libraries.extend([
         "crypto",
         "libz-ng",
+        # libcurl calls the classic zlib API (inflateInit2_ etc.), which zlib-ng
+        # only provides with a zng_ prefix. Link vcpkg's static, PIC zlib so the
+        # extension does not depend on symbols the host Godot binary may not export.
+        "z",
         "liblibmodpbase64"
     ])
     env.Append(LIBPATH=["/usr/lib/x86_64-linux-gnu"])
