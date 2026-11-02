@@ -51,12 +51,15 @@ struct FontHandle {
 
 
 const char*	DocumentContainer::get_default_font_name() const {
-	return Control::get_theme_default_font()->get_font_name().utf8().get_data();
+	// litehtml keeps the returned pointer, so it must outlive this call (a temporary CharString does not).
+	this->m_defaultFontName = Control::get_theme_default_font()->get_font_name().utf8().get_data();
+	return this->m_defaultFontName.c_str();
 }
 
 
 void DocumentContainer::set_html_stl(const std::string_view& html) {
-	this->m_document = litehtml::document::createFromString(html.data(), this);
+	const std::string terminated(html);
+	this->m_document = litehtml::document::createFromString(terminated.c_str(), this);
 	constexpr int32_t MAX_WIDTH = 1000;
 	int32_t currentWidth = this->m_document->render(MAX_WIDTH);
 	this->set_size(Vector2(currentWidth, this->get_size().height));
@@ -106,7 +109,8 @@ void DocumentContainer::delete_font(litehtml::uint_ptr hFont) {
 
 int	DocumentContainer::text_width(const char* text, litehtml::uint_ptr hFont) {
 	FontHandle* handle = reinterpret_cast<FontHandle*>(hFont);
-	return handle->font->get_string_size(text).x;
+	// litehtml hands over UTF-8; String(const char*) would decode it as Latin-1.
+	return handle->font->get_string_size(String::utf8(text)).x;
 }
 
 int DocumentContainer::pt_to_px(int pt) const {
@@ -172,7 +176,8 @@ void DocumentContainer::draw_text(litehtml::uint_ptr hdc, const char* text, lite
 		color = litehtml::web_color::white;
 	}
 	Color textColor(color.red / 255.0f, color.green / 255.0f, color.blue / 255.0f, color.alpha / 255.0f);
-	this->draw_string(fontHandle->font, Vector2(pos.x, pos.y + fontHandle->ascent), text, (HorizontalAlignment)0, -1, get_default_font_size(), textColor);
+	// litehtml hands over UTF-8; String(const char*) would decode it as Latin-1 (e.g. "©" -> "Â©").
+	this->draw_string(fontHandle->font, Vector2(pos.x, pos.y + fontHandle->ascent), String::utf8(text), (HorizontalAlignment)0, -1, get_default_font_size(), textColor);
 }
 
 

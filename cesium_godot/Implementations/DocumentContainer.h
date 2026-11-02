@@ -72,6 +72,7 @@ public:
 private:
 	// We use a hash here bc we do not want to keep a copy of the string
 	std::unordered_map<uint32_t, Ref<ImageTexture>> m_imageCache;
+	mutable std::string m_defaultFontName;
 #ifdef __APPLE__
 	GodotHttpClient<2> m_httpClient;
 #else
