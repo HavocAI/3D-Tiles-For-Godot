@@ -100,7 +100,19 @@ public:
 
 #pragma endregion
 
+	/// @brief Selects and loads tiles for one camera. cameraTransform is in ECEF axes (for example
+	/// georeference.get_tx_engine_to_ecef() * camera.global_transform); with a cartographic origin its
+	/// origin is the camera's offset from the georeference point. Field of view and viewport size are
+	/// taken from the viewport's current camera, or defaults when there is none.
 	void update_tileset(const Transform3D& cameraTransform);
+
+	/// @brief Selects and loads tiles for every view in `views`, rendering the union. No camera is
+	/// needed. Each view is a Dictionary with either "transform" (Transform3D, same frame as
+	/// update_tileset; looks along -Z with +Y up) or "position" (Vector3, same frame) / "ecef_position"
+	/// (Array of 3 floats, absolute ECEF in double precision) plus "direction" (Vector3, ECEF axes) and
+	/// optional "up". Optional "fov" is the vertical field of view in degrees (default 75) and "size"
+	/// the viewport size in pixels used for screen-space error (default 1920x1080).
+	void update_tileset_views(const Array& views);
 
 	void set_debug_boundig_volumes_func(const Callable& onTileDrawn);
 	
@@ -125,6 +137,14 @@ public:
 private:
 
 	void recreate_tileset();
+
+	bool ensure_tileset_loaded();
+
+	glm::dvec3 view_position_to_ecef(const Vector3& position);
+
+	Cesium3DTilesSelection::ViewState make_view_state(const glm::dvec3& ecefPosition, const glm::dvec3& direction, const glm::dvec3& up, const Vector2& viewportSize, double verticalFovRadians);
+
+	void update_views(const std::vector<Cesium3DTilesSelection::ViewState>& views);
 
 	void load_tileset();
 

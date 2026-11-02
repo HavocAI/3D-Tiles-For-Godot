@@ -66,6 +66,8 @@ using namespace godot;
 #include "Cesium3DTilesContent/registerAllTileContentTypes.h"
 #include "../Utils/CesiumVariantHash.h"
 #include <glm/gtc/quaternion.hpp>
+#include <glm/geometric.hpp>
+#include "CesiumGeospatial/Ellipsoid.h"
 #include "CesiumGDRasterOverlay.h"
 #include "CesiumAsync/GunzipAssetAccessor.h"
 #include <CesiumAsync/CachingAssetAccessor.h>
@@ -75,6 +77,9 @@ using namespace godot;
 static int32_t tileCount = 0;
 
 constexpr real_t LOADING_LIMIT_SECONDS = 5.0;
+// Used for views that do not specify them (and by update_tileset when there is no camera / viewport).
+constexpr double DEFAULT_VERTICAL_FOV_DEGREES = 75.0;
+const Vector2 DEFAULT_VIEW_SIZE = Vector2(1920.0, 1080.0);
 constexpr const char* ION_ACCESS_TOKEN_P_NAME = "ion_access_token";
 constexpr const char* ION_ASSET_ID_P_NAME = "ion_asset_id";
 constexpr const char* URL_P_NAME = "url";
@@ -344,58 +349,157 @@ bool Cesium3DTileset::get_create_physics_meshes() const
 	return this->m_createPhysicsMeshes;
 }
 
-void Cesium3DTileset::update_tileset(const Transform3D& cameraTransform)
+bool Cesium3DTileset::ensure_tileset_loaded()
 {
-	
 	bool isGeoreferenced = this->is_georeferenced(&this->m_georeference);
 	if (this->m_activeTileset == nullptr) {
 		if (isGeoreferenced) {
 			this->m_georeference->set_should_update_origin(true);
 			this->m_georeference->register_tileset_to_move_origin(this);
 		}
-		
 		this->load_tileset();
 	}
+	return this->m_activeTileset != nullptr;
+}
 
-	//Get the camera view state
-	Viewport* currentViewport = get_viewport();
-	Camera3D* cam = currentViewport->get_camera_3d();
+glm::dvec3 Cesium3DTileset::view_position_to_ecef(const Vector3& position)
+{
+	// View positions use the same frame as update_tileset's camera transform: ECEF axes, and with
+	// a cartographic origin the engine origin sits at the georeference's ECEF point, so positions
+	// are offsets from that point.
+	glm::dvec3 ecef = CesiumMathUtils::to_glm_dvec3(position);
+	if (this->is_georeferenced(&this->m_georeference)) {
+		ecef += this->m_georeference->get_ecef_position();
+	}
+	return ecef;
+}
 
-	// cameraTransform is in ECEF axes. With a true origin its origin is the camera's ECEF position.
-	// With a cartographic origin the engine origin sits at the georeference's ECEF point, so the
-	// transform's origin is the camera's offset from that point and is added to it.
-	glm::dvec3 camPos = CesiumMathUtils::to_glm_dvec3(cameraTransform.origin);
-	if (isGeoreferenced) {
-		camPos += this->m_georeference->get_ecef_position();
+Cesium3DTilesSelection::ViewState Cesium3DTileset::make_view_state(const glm::dvec3& ecefPosition, const glm::dvec3& direction, const glm::dvec3& up, const Vector2& viewportSize, double verticalFovRadians)
+{
+	Vector2 size = viewportSize;
+	if (size.x <= 0.0 || size.y <= 0.0) {
+		size = DEFAULT_VIEW_SIZE;
+	}
+	glm::dvec3 forward = glm::normalize(direction);
+	glm::dvec3 viewUp = up;
+	// Fall back to the ellipsoid normal (local up), or any perpendicular when looking straight up or down.
+	if (glm::length(viewUp) < 1e-9 || glm::length(glm::cross(forward, glm::normalize(viewUp))) < 1e-6) {
+		viewUp = CesiumGeospatial::Ellipsoid::WGS84.geodeticSurfaceNormal(ecefPosition);
+		if (glm::length(glm::cross(forward, viewUp)) < 1e-6) {
+			viewUp = glm::abs(forward.z) < 0.9 ? glm::dvec3(0.0, 0.0, 1.0) : glm::dvec3(1.0, 0.0, 0.0);
+		}
+	}
+	// ViewState expects an up vector perpendicular to the direction.
+	viewUp = glm::normalize(glm::cross(glm::cross(forward, viewUp), forward));
+	const double aspect = size.x / size.y;
+	const double horizontalFov = 2.0 * Math::atan(aspect * Math::tan(verticalFovRadians * 0.5));
+	return Cesium3DTilesSelection::ViewState(
+		ecefPosition,
+		forward,
+		viewUp,
+		glm::dvec2(size.x, size.y),
+		horizontalFov,
+		verticalFovRadians
+	);
+}
+
+void Cesium3DTileset::update_tileset(const Transform3D& cameraTransform)
+{
+	if (!this->ensure_tileset_loaded()) return;
+
+	// Field of view and size come from the viewport's camera when there is one; otherwise defaults.
+	double verticalFov = Math::deg_to_rad(DEFAULT_VERTICAL_FOV_DEGREES);
+	Vector2 viewportSize = DEFAULT_VIEW_SIZE;
+	Viewport* currentViewport = this->is_inside_tree() ? this->get_viewport() : nullptr;
+	if (currentViewport != nullptr) {
+		#if defined(CESIUM_GD_EXT)
+		viewportSize = currentViewport->get_visible_rect().get_size();
+		#elif defined(CESIUM_GD_MODULE)
+		viewportSize = currentViewport->get_camera_rect_size();
+		#endif
+		Camera3D* cam = currentViewport->get_camera_3d();
+		if (cam != nullptr) {
+			verticalFov = Math::deg_to_rad(cam->get_fov());
+			if (cam->get_keep_aspect_mode() == Camera3D::KEEP_WIDTH && viewportSize.x > 0.0 && viewportSize.y > 0.0) {
+				// fov is horizontal in this mode.
+				verticalFov = 2.0 * Math::atan(Math::tan(verticalFov * 0.5) * viewportSize.y / viewportSize.x);
+			}
+		}
 	}
 
-	Vector3 cameraDirectionGodot = cameraTransform.basis.get_column(Vector3::AXIS_Z);
-	Vector3 cameraUp = cameraTransform.basis.get_column(Vector3::AXIS_Y);
-	glm::dvec3 cameraDirection = glm::normalize(CesiumMathUtils::to_glm_dvec3(-cameraDirectionGodot));
+	const Vector3 forward = -cameraTransform.basis.get_column(Vector3::AXIS_Z);
+	const Vector3 up = cameraTransform.basis.get_column(Vector3::AXIS_Y);
+	this->update_views({ this->make_view_state(
+		this->view_position_to_ecef(cameraTransform.origin),
+		CesiumMathUtils::to_glm_dvec3(forward),
+		CesiumMathUtils::to_glm_dvec3(up),
+		viewportSize,
+		verticalFov
+	) });
+}
 
+void Cesium3DTileset::update_tileset_views(const Array& views)
+{
+	if (!this->ensure_tileset_loaded()) return;
 
-	Vector2 viewportSize;
-	#if defined(CESIUM_GD_EXT)
-	viewportSize = currentViewport->get_visible_rect().get_size();
-	#elif defined(CESIUM_GD_MODULE)
-	viewportSize = currentViewport->get_camera_rect_size();
-	#endif
-	
-	Vector2 aspectRatioV = viewportSize;
-	real_t aspectRatioF = aspectRatioV.x / aspectRatioV.y;
+	std::vector<Cesium3DTilesSelection::ViewState> viewStates;
+	viewStates.reserve(views.size());
+	for (int64_t i = 0; i < views.size(); i++) {
+		if (views[i].get_type() != Variant::DICTIONARY) {
+			ERR_PRINT(String("update_tileset_views: view ") + itos(i) + " is not a Dictionary, skipping it");
+			continue;
+		}
+		const Dictionary view = views[i];
 
-	double verticalFOV = Math::deg_to_rad(cam->get_fov());
-	double horizontalFOV = 2 * Math::atan(aspectRatioF * Math::tan(verticalFOV * 0.5));
-	Cesium3DTilesSelection::ViewState currentViewState = Cesium3DTilesSelection::ViewState(
-		camPos,
-		cameraDirection,
-		CesiumMathUtils::to_glm_dvec3(cameraUp),
-		CesiumMathUtils::to_glm_vec2(viewportSize),
-		horizontalFOV,
-		verticalFOV
-	);
+		glm::dvec3 direction;
+		glm::dvec3 up(0.0);
+		Vector3 position;
+		if (view.has("transform")) {
+			const Transform3D transform = view["transform"];
+			position = transform.origin;
+			direction = CesiumMathUtils::to_glm_dvec3(-transform.basis.get_column(Vector3::AXIS_Z));
+			up = CesiumMathUtils::to_glm_dvec3(transform.basis.get_column(Vector3::AXIS_Y));
+		}
+		else if (view.has("direction") && (view.has("position") || view.has("ecef_position"))) {
+			position = view.get("position", Vector3());
+			direction = CesiumMathUtils::to_glm_dvec3(view["direction"]);
+			if (view.has("up")) {
+				up = CesiumMathUtils::to_glm_dvec3(view["up"]);
+			}
+		}
+		else {
+			ERR_PRINT(String("update_tileset_views: view ") + itos(i) + " needs either \"transform\" or \"position\"/\"ecef_position\" and \"direction\", skipping it");
+			continue;
+		}
+		if (glm::length(direction) < 1e-9) {
+			ERR_PRINT(String("update_tileset_views: view ") + itos(i) + " has a zero direction, skipping it");
+			continue;
+		}
 
-	const Cesium3DTilesSelection::ViewUpdateResult& updateResult = this->m_activeTileset->updateViewGroup(this->m_activeTileset->getDefaultViewGroup(), { currentViewState });
+		glm::dvec3 ecefPosition;
+		if (view.has("ecef_position")) {
+			// Absolute ECEF in doubles (GDScript floats), independent of the georeference.
+			const Array ecef = view["ecef_position"];
+			if (ecef.size() != 3) {
+				ERR_PRINT(String("update_tileset_views: view ") + itos(i) + " ecef_position must have 3 components, skipping it");
+				continue;
+			}
+			ecefPosition = glm::dvec3(double(ecef[0]), double(ecef[1]), double(ecef[2]));
+		}
+		else {
+			ecefPosition = this->view_position_to_ecef(position);
+		}
+
+		const double fov = Math::deg_to_rad(double(view.get("fov", DEFAULT_VERTICAL_FOV_DEGREES)));
+		const Vector2 size = view.get("size", DEFAULT_VIEW_SIZE);
+		viewStates.push_back(this->make_view_state(ecefPosition, direction, up, size, fov));
+	}
+	this->update_views(viewStates);
+}
+
+void Cesium3DTileset::update_views(const std::vector<Cesium3DTilesSelection::ViewState>& views)
+{
+	const Cesium3DTilesSelection::ViewUpdateResult& updateResult = this->m_activeTileset->updateViewGroup(this->m_activeTileset->getDefaultViewGroup(), views);
 	this->m_activeTileset->loadTiles();
 
 	for (CesiumUtility::IntrusivePointer<const Cesium3DTilesSelection::Tile> tile : updateResult.tilesToRenderThisFrame) {
@@ -713,6 +817,7 @@ void Cesium3DTileset::_bind_methods()
 #pragma region Public methods
 	ClassDB::bind_method(D_METHOD("is_initial_loading_finished"), &Cesium3DTileset::is_initial_loading_finished);
 	ClassDB::bind_method(D_METHOD("update_tileset", "camera_transform"), &Cesium3DTileset::update_tileset);
+	ClassDB::bind_method(D_METHOD("update_tileset_views", "views"), &Cesium3DTileset::update_tileset_views);
 	ClassDB::bind_method(D_METHOD("set_debug_bounding_volumes_func", "onTileDrawn"), &Cesium3DTileset::set_debug_boundig_volumes_func);
 	ClassDB::bind_method(D_METHOD("free_tile"), &Cesium3DTileset::free_tile);
 	ClassDB::bind_method(D_METHOD("set_for_each_tile_func", "onTileFunc"), &Cesium3DTileset::set_for_each_tile_func);
