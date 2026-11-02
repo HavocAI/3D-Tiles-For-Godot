@@ -98,6 +98,7 @@ my_project/
 │       ├── panels/
 │       ├── resources/
 │       ├── scripts/
+│       ├── shaders/
 │       ├── visuals/
 │       ├── plugin.cfg
 │       └── Godot3DTiles.gdextension
@@ -163,4 +164,40 @@ You should also see the tilesets and CesiumGeoreference have been added automati
 
 **Hit the Play button**
 Tiles should start loading in now!
+
+## Scripting
+
+### Selecting tiles
+
+`Cesium3DTileset.update_tileset(camera_transform)` selects and loads tiles for one camera. `camera_transform` is in ECEF axes, e.g. `georeference.get_tx_engine_to_ecef() * camera.global_transform`. With a cartographic origin, its origin is the camera's offset from the georeference's point. Field of view and viewport size come from the viewport's camera, or defaults when there is none.
+
+`Cesium3DTileset.update_tileset_views(views)` selects tiles for any number of views and renders their union, with no camera needed. This is useful for loading tiles around vehicles for collision as well as for each render camera. Each view is a Dictionary with:
+
+* either `"transform"` (`Transform3D`, same frame as `update_tileset`, looking along -Z), or `"position"` (`Vector3`, same frame) / `"ecef_position"` (`[x, y, z]` absolute ECEF in double precision) plus `"direction"` (ECEF axes) and an optional `"up"`
+* optional `"fov"` (vertical, degrees, default 75) and `"size"` (viewport pixels used for screen-space error, default 1920×1080)
+
+```gdscript
+tileset.update_tileset_views([
+    {"transform": georeference.get_tx_engine_to_ecef() * camera.global_transform, "fov": camera.fov, "size": Vector2(get_viewport().size)},
+    {"ecef_position": vehicle_ecef, "direction": -vehicle_up_ecef, "fov": 120.0, "size": Vector2(512, 512)},
+])
+```
+
+### Feature metadata
+
+Tiles (`Cesium3DTile`, the tileset's children) expose `EXT_structural_metadata` and `EXT_mesh_features`, including batch tables that cesium-native converts. For example, the properties of an OSM building hit by a ray against the tile's collision shape:
+
+```gdscript
+var hit := space_state.intersect_ray(query)
+var tile = hit.collider.get_parent() # Cesium3DTile
+var properties: Dictionary = tile.get_face_feature_properties(hit.face_index)
+```
+
+* `get_feature_count(table = 0)` and `get_feature_properties(feature_id, table = 0)` return one feature's properties
+* `get_feature_id_set_count()`, `get_vertex_feature_ids(surface, set = 0)` and `get_face_feature_id(face_index, set = 0)` map vertices and faces (as in `Mesh.get_faces()`) to feature IDs
+* `get_metadata_table(table)` returns `{name: CesiumPropertyInfo}`, where `get_value()` holds one value per feature and `get_value_at(feature_id)` returns one
+
+### Data attribution
+
+Credits are shown in an overlay at the bottom left. `CesiumGDCreditSystem.set_credits_collapsed(true)` (or the overlay's `collapsed` property) keeps only the credits that must stay on screen and adds a "Data attribution" link that lists the rest.
 
