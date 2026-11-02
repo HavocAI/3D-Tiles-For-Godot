@@ -63,6 +63,9 @@ void DocumentContainer::set_html_stl(const std::string_view& html) {
 	constexpr int32_t MAX_WIDTH = 1000;
 	int32_t currentWidth = this->m_document->render(MAX_WIDTH);
 	this->set_size(Vector2(currentWidth, this->get_size().height));
+	// Lets containers lay out siblings (e.g. the attribution link) after the text, and size panels.
+	this->set_custom_minimum_size(Vector2(currentWidth, this->m_document->height()));
+	this->update_minimum_size();
 	this->queue_redraw();
 }
 
