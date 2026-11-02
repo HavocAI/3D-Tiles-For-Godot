@@ -63,13 +63,21 @@ public:
     CesiumPropertyInfo() {};
     ~CesiumPropertyInfo() {};
 
-	EPropertyType propertyType;
-	EComponentType componentType;
-	bool isArray;
+	EPropertyType propertyType = EPropertyType::Invalid;
+	EComponentType componentType = EComponentType::None;
+	bool isArray = false;
 	
+    /// One value per feature (row) of the property table.
     godot::Variant data;
 
+    /// @brief Every feature's value, indexed by feature ID.
     godot::Variant get_value();
+
+    /// @brief One feature's value, or null when out of range.
+    godot::Variant get_value_at(int64_t featureId);
+
+    int64_t get_count();
+
     godot::String get_string_value();
 };
 

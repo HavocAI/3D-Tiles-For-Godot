@@ -244,6 +244,11 @@ Ref<ArrayMesh> CesiumGDModelLoader::generate_meshes_from_model(const CesiumGltf:
 				}
 			}
 
+			surfaceInfo.vertexCount = vertices.size();
+			if (primitive.mode == CesiumGltf::MeshPrimitive::Mode::TRIANGLES) {
+				surfaceInfo.faceCount = indexBuffer.size() / 3;
+			}
+
 			// Surfaces accumulate across all meshes and primitives of the model.
 			const int32_t surfaceIndex = meshInstance->get_surface_count();
 			*error = apply_surface_to_mesh(primitive, meshInstance, arrays);

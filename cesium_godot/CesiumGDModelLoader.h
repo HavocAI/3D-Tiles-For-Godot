@@ -30,6 +30,10 @@ struct CesiumGDSurfaceInfo {
 	int32_t primitiveIndex = -1;
 	/// For _CESIUMOVERLAY_0 and _CESIUMOVERLAY_1: the Godot UV channel holding them (1 = UV, 2 = UV2), or 0.
 	int8_t overlayUvChannel[2] = { 0, 0 };
+	/// Triangles this surface contributes to Mesh::get_faces() (0 for non-triangle surfaces).
+	int64_t faceCount = 0;
+	/// Vertices in the surface (glTF vertices, plus any padding the loader added).
+	int64_t vertexCount = 0;
 };
 
 class CesiumGDModelLoader {

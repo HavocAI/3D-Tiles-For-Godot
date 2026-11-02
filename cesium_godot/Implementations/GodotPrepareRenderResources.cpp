@@ -129,9 +129,6 @@ CesiumAsync::Future<Cesium3DTilesSelection::TileLoadResultAndRenderResources> Go
 			instance->generate_tile_collision();
 		}
 
-		// Metadata extraction
-		const CesiumGltf::ExtensionModelExtStructuralMetadata* modelMetadata = movedModel->getExtension<CesiumGltf::ExtensionModelExtStructuralMetadata>();
-		instance->add_metadata(movedModel, modelMetadata);
 
 		TileLoadResultAndRenderResources result{
 			std::move(tileLoadResult),
@@ -167,6 +164,9 @@ void* GodotPrepareRenderResources::prepareInMainThread(Tile& tile, void* pLoadTh
 	// Then apply the z up
 	glm::dvec3 position = glm::dvec3(CesiumMathUtils::ecef_to_engine(tileTransform[3]));
 	instance->set_original_position(instance->get_original_position() + position);
+	// Metadata and feature IDs are read from the model cesium-native keeps for this tile (it was
+	// moved there after prepareInLoadThread) until free() below.
+	instance->set_model(&model);
 	return pLoadThreadResult;
 }
 
@@ -175,6 +175,10 @@ void GodotPrepareRenderResources::free(Tile& tile, void* pLoadThreadResult, void
 	const auto& tileId = tile.getTileID();
 	uint64_t hash = static_cast<uint64_t>(std::visit(CesiumVariantHash{}, tileId));
 	auto* instance = static_cast<Cesium3DTile*>(pMainThreadResult);
+	if (instance != nullptr) {
+		// The model is released with this call; the node itself is freed later.
+		instance->set_model(nullptr);
+	}
 	this->m_tileset->call_deferred("free_tile", instance, hash);
 }
 
