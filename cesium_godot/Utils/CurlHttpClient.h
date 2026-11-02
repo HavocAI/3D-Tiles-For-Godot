@@ -23,221 +23,188 @@ using namespace godot;
 
 #include "BRThreadPool.h"
 #include <curl/curl.h>
+#include <cstring>
+#include <mutex>
 #include <vector>
 #include <string>
 
 using HighLevelResponseCallback_t = std::function<void(int32_t, const PackedByteArray&)>;
 using CesiumHeader_t = std::pair<std::string, std::string>;
 
-struct RequestHandle_t {
-	CURL *curlHandle;
-	bool available;
-
-	RequestHandle_t() : curlHandle(nullptr), available(true) {}
-
-	RequestHandle_t(const RequestHandle_t &other) {
-		this->curlHandle = other.curlHandle;
-		this->available = other.available;
-	}
-
-	RequestHandle_t &operator=(const RequestHandle_t &other) {
-		if (this != &other) {
-			this->curlHandle = other.curlHandle;
-			this->available = other.available;
+/// @brief One reusable curl easy handle per thread. A handle is never shared between threads, and
+/// it is reset before each request so options from an earlier request (method, headers, ...) never
+/// leak into the next one. Reusing it keeps connections alive between requests on the same thread.
+class ThreadCurlHandle {
+public:
+	~ThreadCurlHandle() {
+		if (this->m_handle != nullptr) {
+			curl_easy_cleanup(this->m_handle);
 		}
-		return *this;
 	}
 
-	void easy_init() {
-		this->curlHandle = curl_easy_init();
-		this->available = true;
-		curl_easy_setopt(this->curlHandle, CURLOPT_SSL_VERIFYPEER, 0L);
-		curl_easy_setopt(this->curlHandle, CURLOPT_SSL_VERIFYHOST, 0L);
-		curl_easy_setopt(this->curlHandle, CURLOPT_FOLLOWLOCATION, 1);
-		curl_easy_setopt(this->curlHandle, CURLOPT_VERBOSE, 0);
+	static CURL* acquire() {
+		thread_local ThreadCurlHandle threadHandle;
+		if (threadHandle.m_handle == nullptr) {
+			threadHandle.m_handle = curl_easy_init();
+		} else {
+			curl_easy_reset(threadHandle.m_handle);
+		}
+		return threadHandle.m_handle;
 	}
 
-	void easy_cleanup() {
-		curl_easy_cleanup(this->curlHandle);
+private:
+	CURL* m_handle = nullptr;
+};
+
+/// @brief Wrapper around libcurl that runs blocking requests on a small thread pool.
+/// send_request may be called from any thread.
+template<uint32_t N_MAX_HANDLES>
+class CurlHttpClient {
+public:
+	CurlHttpClient() {
+		// curl_global_init is not thread-safe; do it once and never clean up, since handles owned by
+		// other threads may outlive any single client.
+		static std::once_flag s_curlInit;
+		std::call_once(s_curlInit, [] { curl_global_init(CURL_GLOBAL_ALL); });
 	}
 
-	void configure_http_method(HTTPClient::Method method) {
+	void init_client(size_t maxThreads) {
+		std::lock_guard<std::mutex> lock(this->m_headersMutex);
+		if (this->m_threadPool.size() > 0) {
+			return; // Already initialized (callers may call this more than once).
+		}
+		this->m_threadPool.init(maxThreads);
+		std::string systemInfo = OS::get_singleton()->get_name().utf8().get_data();
+		auto architecture = OS::get_singleton()->get_processor_name().utf8().get_data();
+		std::stringstream stream;
+		stream << "Godot3DTiles/1.0 (" << systemInfo << "; " << architecture << ")";	
+		this->m_defaultHeaders.emplace_back("User-Agent", stream.str());
+	}
+
+	void send_get(const char* url, const HighLevelResponseCallback_t& callback, const std::vector<CesiumHeader_t>& headers) {
+		this->send_request(url, HTTPClient::METHOD_GET, callback, headers);
+	}
+
+	void send_get_same_thread(const char *url, const HighLevelResponseCallback_t &callback, const std::vector<CesiumHeader_t> &headers) {
+		this->send_request_same_thread(url, HTTPClient::METHOD_GET, callback, headers);
+	}
+
+	void send_request(const char* url, HTTPClient::Method method, const HighLevelResponseCallback_t& callback, const std::vector<CesiumHeader_t>& headers) {
+		// Everything the request needs is captured by value: this returns before the request runs.
+		this->m_threadPool.enqueue([this, urlCopy = std::string(url), method, headers, callback] {
+			long responseCode = 0;
+			PackedByteArray packedData = this->pull_url(urlCopy.c_str(), method, &responseCode, headers);
+			callback(responseCode, packedData);
+		});
+	}
+
+	void send_request_same_thread(const char *url, HTTPClient::Method method, const HighLevelResponseCallback_t &callback, const std::vector<CesiumHeader_t> &headers) {
+		long responseCode = 0;
+		PackedByteArray packedData = this->pull_url(url, method, &responseCode, headers);
+		callback(responseCode, packedData);
+	}
+
+	void add_default_header(const CesiumHeader_t& header) {
+		std::lock_guard<std::mutex> lock(this->m_headersMutex);
+		this->m_defaultHeaders.emplace_back(header);
+	}
+
+private:
+	static void configure_http_method(CURL* handle, HTTPClient::Method method) {
+		// Requests never carry a body here, so make sure curl does not try to read one (from stdin).
 		switch (method) {
+			case HTTPClient::METHOD_GET:
+				break;
+			case HTTPClient::METHOD_HEAD:
+				curl_easy_setopt(handle, CURLOPT_NOBODY, 1L);
+				break;
 			case HTTPClient::METHOD_POST:
-				curl_easy_setopt(this->curlHandle, CURLOPT_POST, 1);
+				curl_easy_setopt(handle, CURLOPT_POST, 1L);
+				curl_easy_setopt(handle, CURLOPT_POSTFIELDS, "");
+				curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE, 0L);
 				break;
 			case HTTPClient::METHOD_PUT:
-				curl_easy_setopt(this->curlHandle, CURLOPT_UPLOAD, 1);
+				curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "PUT");
+				break;
+			case HTTPClient::METHOD_DELETE:
+				curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "DELETE");
+				break;
+			case HTTPClient::METHOD_OPTIONS:
+				curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "OPTIONS");
+				break;
+			case HTTPClient::METHOD_TRACE:
+				curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "TRACE");
+				break;
+			case HTTPClient::METHOD_CONNECT:
+				curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "CONNECT");
+				break;
+			case HTTPClient::METHOD_PATCH:
+				curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, "PATCH");
 				break;
 			default:
 				break;
 		}
 	}
 
-};
-
-struct MemoryStruct {
-	char *memory;
-	size_t size;
-};
-
-/// @brief Wrapper around libcurl, but without worrying about polling constantly
-template<uint32_t N_MAX_HANDLES>
-class CurlHttpClient {
-	static_assert(N_MAX_HANDLES <= 100); //Just to handle around 80 handles at once, multiple transfers will happen on the same handle
-
-public:
-	CurlHttpClient() {
-		if (s_activeInstances == 0) {
-			curl_global_init(CURL_GLOBAL_ALL);
-		}
-		s_activeInstances++;
-		this->m_activeHandles.reserve(N_MAX_HANDLES);
-		//Init all handles
-		for (int32_t i = 0; i < N_MAX_HANDLES; i++) {
-			RequestHandle_t handle{};
-			handle.easy_init();
-			this->m_activeHandles.push_back(handle);
-		}
-	}
-
-	~CurlHttpClient() {
-		for (int32_t i = 0; i < this->m_activeHandles.size(); i++) {
-			this->m_activeHandles[i].easy_cleanup();
-		}
-
-		s_activeInstances--;
-		if (s_activeInstances == 0) {
-			curl_global_cleanup();
-		}
-	}
-
-	void init_client(size_t maxThreads) {
-		this->m_threadPool.init(maxThreads);
-		std::string systemInfo = OS::get_singleton()->get_name().utf8().get_data();
-		auto architecture = OS::get_singleton()->get_processor_name().utf8().get_data();
-		std::stringstream stream;
-		stream << "Godot3DTiles/1.0 (" << systemInfo << "; " << architecture << ")";	
-		this->add_default_header({"User-Agent", stream.str()});
-	}
-
-	void send_get(const char* url, const HighLevelResponseCallback_t& callback, const std::vector<CesiumHeader_t>& headers) {
-		// Just send a request here
-		this->send_request(url, HTTPClient::METHOD_GET, callback, headers);
-	}
-
-	void send_get_same_thread(const char *url, const HighLevelResponseCallback_t &callback, const std::vector<CesiumHeader_t> &headers) {
-		// Just send a request here
-		this->send_request_same_thread(url, HTTPClient::METHOD_GET, callback, headers);
-	}
-
-	void send_request(const char* url, HTTPClient::Method method, const HighLevelResponseCallback_t& callback, const std::vector<CesiumHeader_t>& headers) {
-		//Get any active handle
-		int32_t handleIdx = this->get_available_handle_index();
-		this->m_activeHandles[handleIdx].available = false;
-		std::string urlCopy = url;
-		this->m_threadPool.enqueue([&, urlCopy, headers, callback, handleIdx] {
-			RequestHandle_t& handle = this->m_activeHandles[handleIdx];
-			handle.configure_http_method(method);
-			long responseCode;
-			PackedByteArray packedData = pull_url(urlCopy.c_str(), handle.curlHandle, &responseCode, headers);
-			//And call the callback methods here
-			callback(responseCode, packedData);
-			handle.available = true;
-		});
-	}
-
-
-	void send_request_same_thread(const char *url, HTTPClient::Method method, const HighLevelResponseCallback_t &callback, const std::vector<CesiumHeader_t> &headers) {
-		//Get any active handle
-		int32_t handleIdx = this->get_available_handle_index();
-		this->m_activeHandles[handleIdx].available = false;
-		RequestHandle_t &handle = this->m_activeHandles[handleIdx];
-		handle.configure_http_method(method);
-		long responseCode;
-		PackedByteArray packedData = pull_url(url, handle.curlHandle, &responseCode, headers);
-		//And call the callback methods here
-		callback(responseCode, packedData);
-		handle.available = true;
-	}
-
-	void add_default_header(const CesiumHeader_t& header) {
-		this->m_defaultHeaders.emplace_back(header);
-	}
-
-private:
-	static inline uint16_t s_activeInstances = 0;
-
-	PackedByteArray pull_url(const char *url, CURL *handle, long*outStatus , const std::vector<CesiumHeader_t> &headers) {
+	PackedByteArray pull_url(const char *url, HTTPClient::Method method, long *outStatus, const std::vector<CesiumHeader_t> &headers) {
+		*outStatus = 0;
 		PackedByteArray buffer;
-		//Options stuff
+		CURL* handle = ThreadCurlHandle::acquire();
+		if (handle == nullptr) {
+			ERR_PRINT(String("Could not create a curl handle for: ") + String::utf8(url));
+			return buffer;
+		}
+
+		curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
+		curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 0L);
+		curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
 		curl_easy_setopt(handle, CURLOPT_URL, url);
 		curl_easy_setopt(handle, CURLOPT_WRITEFUNCTION, &CurlHttpClient::write_callback);
 		curl_easy_setopt(handle, CURLOPT_WRITEDATA, &buffer);
 		curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "");
-
+		configure_http_method(handle, method);
 
 		curl_slist* curlHeaders = nullptr;
-		for (const CesiumHeader_t& h : headers)
 		{
-			std::string strHeader = h.first + ": ";
-			strHeader += h.second;
-			curlHeaders = curl_slist_append(curlHeaders, strHeader.c_str());
+			std::lock_guard<std::mutex> lock(this->m_headersMutex);
+			for (const CesiumHeader_t& h : this->m_defaultHeaders) {
+				curlHeaders = curl_slist_append(curlHeaders, (h.first + ": " + h.second).c_str());
+			}
 		}
-
 		for (const CesiumHeader_t& h : headers) {
-			std::string strHeader = h.first + ": ";
-			strHeader += h.second;
-			curlHeaders = curl_slist_append(curlHeaders, strHeader.c_str());
+			curlHeaders = curl_slist_append(curlHeaders, (h.first + ": " + h.second).c_str());
 		}
-		
-		// Then add default headers
-
 		curl_easy_setopt(handle, CURLOPT_HTTPHEADER, curlHeaders);
 
-		//Perform the request		
 		CURLcode code = curl_easy_perform(handle);
-		//Then from the result we can do error handling
-		if (code != CURLcode::CURLE_OK) {
-			ERR_PRINT(String("Could not make request to: ") + url + String(" error: ") + itos(code));
-			return PackedByteArray();
+		if (code == CURLE_OK) {
+			curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, outStatus);
+		} else {
+			ERR_PRINT(String("Could not make request to: ") + String::utf8(url) + String(" error: ") + itos(code) + " (" + curl_easy_strerror(code) + ")");
+			buffer = PackedByteArray();
 		}
-
-		curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, outStatus);
+		// The handle keeps a pointer to the header list until its next reset, so clear it first.
+		curl_easy_setopt(handle, CURLOPT_HTTPHEADER, nullptr);
 		curl_slist_free_all(curlHeaders);
 		return buffer;
 	}
 
 	static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
-		auto *vectorBuffer = reinterpret_cast<PackedByteArray*>(userp);
-		char *contentCStr = reinterpret_cast<char *>(contents);
-		size_t realSize = size * nmemb;
-
-		for (size_t i = 0; i < realSize; i++) {
-			vectorBuffer->push_back(contentCStr[i]);
+		auto *buffer = reinterpret_cast<PackedByteArray*>(userp);
+		const size_t realSize = size * nmemb;
+		const int64_t previousSize = buffer->size();
+		if (buffer->resize(previousSize + realSize) != OK) {
+			return 0; // Tells curl the write failed.
 		}
-	
+		memcpy(buffer->ptrw() + previousSize, contents, realSize);
 		return realSize;
 	}
 
-	int32_t get_available_handle_index() {
-		for (int32_t i = 0; i < this->m_activeHandles.size(); i++)
-		{
-			const RequestHandle_t &handle = this->m_activeHandles.at(i);
-			if (handle.available) {
-				return i;
-			}
-		}
-		RequestHandle_t handle{};
-		handle.easy_init();
-		this->m_activeHandles.push_back(handle);
-		return this->m_activeHandles.size() - 1;
-	}
-
+	// Declared before the pool so the pool (whose workers use these) is destroyed first.
+	std::mutex m_headersMutex;
+	std::vector<CesiumHeader_t> m_defaultHeaders;
 	//Have a thread pool for some batches of requests
 	BRThreadPool m_threadPool;
-	std::vector<CesiumHeader_t> m_defaultHeaders;
-	std::vector<RequestHandle_t> m_activeHandles;
 };
 
 #endif // HIGH_LEVEL_HTTP_CLIENT
