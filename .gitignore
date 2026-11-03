@@ -44,3 +44,6 @@ godot3dtiles/addons/cesium_godot/lib/*
 *.vcxproj
 *.vcxproj.filters
 *.dblite
+
+# Release archives from scripts/release/build_linux.sh
+dist/

@@ -1,0 +1,95 @@
+name: Linux release
+
+# Builds the Linux x86_64 addon on Debian bookworm, loads it in headless Godot,
+# and on a v* tag attaches it to that tag's GitHub release. havoc-canvas pins a
+# release by tag and SHA-256 and downloads it at build time.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    container:
+      # havoc-canvas's runtime base image. A library built here needs no newer
+      # glibc or libstdc++ than that image has. Keep the digest in step with
+      # Canvas's Dockerfile.
+      image: public.ecr.aws/docker/library/python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+    steps:
+      # Without git in the container, actions/checkout downloads a tarball
+      # instead of cloning, and the build reads git metadata.
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+      - uses: actions/checkout@v4
+      # Building cesium-native's vcpkg dependencies takes most of the run, so
+      # keep them between runs, even when a later step fails.
+      - name: Restore vcpkg packages
+        id: vcpkg
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.ezvcpkg
+          key: ezvcpkg-bookworm-${{ hashFiles('CesiumBuildUtils.py') }}
+          restore-keys: ezvcpkg-bookworm-
+      - name: Build and package
+        run: bash scripts/release/build_linux.sh
+        env:
+          SRC: ${{ github.workspace }}
+          OUT: ${{ github.workspace }}/dist
+      - name: Drop vcpkg's source downloads before caching
+        if: always() && steps.vcpkg.outputs.cache-hit != 'true'
+        run: rm -rf ~/.ezvcpkg/*/downloads ~/.ezvcpkg/*/buildtrees
+      - name: Save vcpkg packages
+        if: always() && steps.vcpkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.ezvcpkg
+          key: ${{ steps.vcpkg.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cesium_godot-linux-x86_64
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: public.ecr.aws/docker/library/python:3.11-slim-bookworm@sha256:0a310eeecf4e1f5a0743f9a6520c90c88d089c903ca5fd283f501e3a805f5f89
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: cesium_godot-linux-x86_64
+          path: dist
+      - name: Load the addon in headless Godot
+        run: bash scripts/release/smoke_test.sh dist/cesium_godot-linux-x86_64.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cesium_godot-linux-x86_64
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" \
+            --notes "Linux x86_64 build of $GITHUB_SHA, built on Debian bookworm.
+
+          - \`cesium_godot-linux-x86_64.tar.gz\`: unpack it into a Godot project's \`addons/\` directory.
+          - \`cesium_godot-linux-x86_64-debug.tar.gz\`: the library's debug info, for reading crash backtraces.
+          - \`SHA256SUMS\`: checksums of both archives."

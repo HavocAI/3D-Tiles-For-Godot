@@ -63,6 +63,16 @@ scons compiledb=yes arch=x64 compileTarget=extension debug_symbols=yes
 
 **The build binaries will be at `godot3dtiles/bin/Godot3DTiles.windows.template_debug.x86_64.dll` for Windows, `godot3dtiles/bin/libGodot3DTiles.linux.template_debug.x86_64.so`**
 
+### Linux release builds
+
+A Linux library only loads on systems whose glibc and libstdc++ are at least as new as those of the machine that built it. Releases are therefore built on Debian bookworm, which is the base of havoc-canvas's runtime image. Pushing a `v*` tag runs `.github/workflows/linux-release.yml`. The workflow builds the addon with `scripts/release/build_linux.sh`, loads it in headless Godot with `scripts/release/smoke_test.sh`, and attaches these files to the tag's release:
+
+- `cesium_godot-linux-x86_64.tar.gz`: the `cesium_godot/` addon with the stripped library. Unpack it into a project's `addons/` directory.
+- `cesium_godot-linux-x86_64-debug.tar.gz`: the library's debug info, for reading crash backtraces.
+- `SHA256SUMS`: the checksums of both archives.
+
+To build the same archives locally, run the script in the same image as CI. The command for this is at the top of `scripts/release/build_linux.sh`.
+
 
 ## Double precision builds
 The plugin supports double precision mode for more accurate true origin navigation.
