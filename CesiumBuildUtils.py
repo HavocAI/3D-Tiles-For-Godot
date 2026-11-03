@@ -148,10 +148,72 @@ def clone_bindings_repo_if_needed():
     )
 
 
+# The commit the headers in cesium_godot/third_party/litehtml/include come from.
+LITEHTML_COMMIT = "35ecd69d05e72b0148204a576db62c2148084193"
+
+LITEHTML_SOURCE_DIR = ROOT_DIR_EXT + "/third_party/litehtml-src"
+
+LITEHTML_LINUX_LIB_DIR = ROOT_DIR_EXT + "/third_party/litehtml/linux"
+
+
 def clone_lite_html_if_needed():
-    # clone_repo_if_needed(ROOT_DIR_EXT + "/third_party/lite-html", "Lite HTML",
-    #                      "https://github.com/litehtml/litehtml.git", "v0.9", "6ca1ab0419e770e6d35a1ef690238773a1dafcee")
-    pass
+    # Windows links the prebuilt .lib files and macOS the prebuilt archives in
+    # third_party/litehtml/macos. Linux builds litehtml from source: an archive
+    # built on a newer distro references glibc symbols (such as the C23
+    # __isoc23_strtol) that older systems lack, and the extension then fails
+    # to load there.
+    if os.name != OS_LINUX or sys.platform == PLATFORM_MACOS:
+        return
+    sourceDir = scons_to_abs_path(LITEHTML_SOURCE_DIR)
+    if os.path.exists(sourceDir):
+        return
+    print("Cloning litehtml repo")
+    # A commit, not a tag, so fetch it directly rather than with clone -b.
+    for command in (
+        ["git", "init", "-q", sourceDir],
+        ["git", "-C", sourceDir, "fetch", "-q", "--depth=1",
+         "https://github.com/litehtml/litehtml.git", LITEHTML_COMMIT],
+        ["git", "-C", sourceDir, "checkout", "-q", "FETCH_HEAD"],
+    ):
+        if subprocess.run(command).returncode != 0:
+            print("Error cloning litehtml", file=sys.stderr)
+            shutil.rmtree(sourceDir, ignore_errors=True)
+            exit(1)
+
+
+def build_litehtml_linux():
+    """Build litehtml and its bundled gumbo as static, position-independent
+    archives in third_party/litehtml/linux."""
+    source_dir = scons_to_abs_path(LITEHTML_SOURCE_DIR)
+    output_dir = scons_to_abs_path(LITEHTML_LINUX_LIB_DIR)
+    libs = ["liblitehtml.a", "libgumbo.a"]
+    if all(os.path.exists(os.path.join(output_dir, lib)) for lib in libs):
+        print("litehtml already built for Linux, skipping...")
+        return
+
+    print("Building litehtml from source for Linux...")
+    build_dir = os.path.join(source_dir, "build-linux")
+    configure = [
+        "cmake", "-S", source_dir, "-B", build_dir,
+        "-DCMAKE_BUILD_TYPE=Release",
+        # Linked into the extension's shared library.
+        "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
+        "-DLITEHTML_BUILD_TESTING=OFF",
+    ]
+    build = ["cmake", "--build", build_dir, "--parallel", get_build_parallel_level()]
+    for command in (configure, build):
+        if subprocess.run(command).returncode != 0:
+            print("Error building litehtml, see the output above", file=sys.stderr)
+            exit(1)
+
+    os.makedirs(output_dir, exist_ok=True)
+    for lib in libs:
+        found = [os.path.join(root, lib) for root, _, files in os.walk(build_dir) if lib in files]
+        if not found:
+            print(f"Error: the litehtml build produced no {lib}", file=sys.stderr)
+            exit(1)
+        shutil.copy2(found[0], output_dir)
+    print("litehtml build complete!")
 
 
 def build_litehtml(arch="arm64"):
