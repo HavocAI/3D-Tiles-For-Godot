@@ -36,9 +36,8 @@ godot3dtiles/addons/cesium_godot/lib/*
 !godot-html/ultralight/lib/*.lib
 !cesium_godot/third_party/litehtml/*.lib
 
-# Ignore any project import files 
-godot3dtiles/**/*.uid
-godot3dtiles/**/*.import
+# The addon's .import and .uid files are tracked: a fresh checkout imports its
+# icons before scripts preload them, and its scenes keep resolving by UID.
 
 # Ignore large files
 *.ipch
