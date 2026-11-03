@@ -40,6 +40,11 @@ var token_panel: Popup = null
 var token_panel_data : TokenPanelData = null
 
 func _enter_tree() -> void:
+	# A headless editor (a CI import, an export) shows no dock, so skip building
+	# the panel and asking Cesium ion for the asset list. When `--quit` exits
+	# while that request is pending, Godot reports leaked resources.
+	if DisplayServer.get_name() == "headless":
+		return
 	self.set_process(false)
 	self.docked_scene = editorAddon.instantiate()
 	add_control_to_dock(EditorPlugin.DOCK_SLOT_RIGHT_UL, self.docked_scene)
@@ -60,6 +65,8 @@ func _enter_tree() -> void:
 
 
 func _exit_tree() -> void:
+	if self.docked_scene == null:
+		return
 	print("Disabled Cesium plugin")
 	remove_control_from_docks(self.docked_scene)
 	self.docked_scene.free()
