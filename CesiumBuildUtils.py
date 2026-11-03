@@ -223,16 +223,46 @@ def clone_repo_if_needed(
     print(f"Cloning {name} repo")
     repoDirectory = scons_to_abs_path(targetDir)
     if os.path.exists(repoDirectory):
+        head = _git_head(repoDirectory)
+        if head != acceptedCommitSHA:
+            print(
+                f"[CESIUM] - Warning: {name} at {repoDirectory} is at {head}, "
+                f"expected {acceptedCommitSHA} ({branch})",
+                file=sys.stderr,
+            )
         return
-    subprocess.run(
+    result = subprocess.run(
         ["git", "clone", "--depth=1", "-b", branch, repoUrl, "--recursive", repoDirectory]
     )
+    if result.returncode != 0:
+        print(f"Error cloning {name} from {repoUrl}", file=sys.stderr)
+        exit(1)
 
-    # Shouldn't we just rely on the repo tags?
-    # prevDir: str = os.getcwd()
-    # os.chdir(repoDirectory)
-    # subprocess.run(["git", "reset", "--hard", acceptedCommitSHA])
-    # os.chdir(prevDir)
+    # Tags can be moved, so check the clone against the accepted commit.
+    head = _git_head(repoDirectory)
+    if head != acceptedCommitSHA:
+        print(
+            f"Error: {name} tag {branch} is at {head}, expected {acceptedCommitSHA}",
+            file=sys.stderr,
+        )
+        exit(1)
+
+
+def _git_head(repoDirectory: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", repoDirectory, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def is_deps_only(argsDict) -> bool:
+    return argsDict.get("deps_only", "no").upper() in ("YES", "TRUE", "1")
+
+
+def get_build_parallel_level() -> str:
+    return os.environ.get("CMAKE_BUILD_PARALLEL_LEVEL") or str(os.cpu_count() or 1)
 
 
 # Configure with CMake
@@ -253,6 +283,9 @@ def configure_native(argumentsDict):
             "-DCESIUM_MSVC_STATIC_RUNTIME_ENABLED=ON",
             "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
             "-DGIT_LFS_SKIP_SMUDGE=1",
+            # The extension links none of cesium-native's tests; skipping them
+            # saves the Catch2 port and the test sources from the build.
+            "-DCESIUM_TESTS_ENABLED=OFF",
             "-DVCPKG_TRIPLET=%s" % triplet,
             ".",
         ]
@@ -318,11 +351,11 @@ def compile_native(argumentsDict):
 
 
 def build_native_linux():
-    return subprocess.run(["cmake", "--build", "."])
+    return subprocess.run(["cmake", "--build", ".", "--parallel", get_build_parallel_level()])
 
 
 def build_native_macos():
-    return subprocess.run(["cmake", "--build", "."])
+    return subprocess.run(["cmake", "--build", ".", "--parallel", get_build_parallel_level()])
 
 
 def build_native_win():

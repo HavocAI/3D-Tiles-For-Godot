@@ -47,8 +47,13 @@ env.Append(CPPPATH=["testSrc/", "cesium_godot/", "cesium_auxiliars/"])
 SConscript("cesium_godot/SCsub", exports="env")
 
 
-# Create shared library
-if env["platform"] == "macos":
+if cesium_build_utils.is_deps_only(ARGUMENTS):
+    # Build only the dependencies (Cesium Native above, and godot-cpp, which is
+    # its own default target), so a container layer can cache them apart from
+    # the extension sources. The godot-cpp objects get the same flags as in a
+    # full build because SCsub has already set up the shared environment.
+    print("[CESIUM] - deps_only: built Cesium Native and godot-cpp, skipping the extension")
+elif env["platform"] == "macos":
     library = env.SharedLibrary(
         "godot3dtiles/addons/cesium_godot/lib/lib{}{}{}".format(
             LIB_NAME, env["suffix"], env["SHLIBSUFFIX"]
@@ -62,5 +67,6 @@ else:
         source=sources,
     )
 
-# Set the default target
-Default(library)
+if not cesium_build_utils.is_deps_only(ARGUMENTS):
+    # Set the default target
+    Default(library)
