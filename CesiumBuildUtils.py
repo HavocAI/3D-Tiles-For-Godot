@@ -309,8 +309,9 @@ def compile_native(argumentsDict):
         print(
             "Compiling for platform %s is not yet supported!" % os.name, file=sys.stderr
         )
-    if result.returncode != 0:
-        print("Error building Cesium Native: %s" % str(result.stderr))
+    if result is None or result.returncode != 0:
+        print("Error building Cesium Native, see the compiler output above", file=sys.stderr)
+        exit(1)
     print("Cleaning definitions on generated files...")
     clean_cesium_definitions()
     print("Finished building Cesium Native!")
