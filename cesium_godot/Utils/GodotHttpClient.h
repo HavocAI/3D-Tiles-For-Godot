@@ -17,6 +17,7 @@ using namespace godot;
 #endif
 
 #include "BRThreadPool.h"
+#include "DataUri.h"
 #include "RedactCredentials.h"
 #include <cstddef>
 #include <cstring>
@@ -153,16 +154,12 @@ private:
 		const String url = String::utf8(redact_credentials(urlStr).c_str());
 
 		// Handle data: URIs (base64-encoded inline data, used by Cesium credit logos)
-		if (urlStr.rfind("data:", 0) == 0) {
-			size_t base64Pos = urlStr.find(";base64,");
-			if (base64Pos != std::string::npos) {
-				std::string base64Data = urlStr.substr(base64Pos + 8);
-				String godotBase64 = String(base64Data.c_str());
-				buffer = Marshalls::get_singleton()->base64_to_raw(godotBase64);
+		if (is_data_uri(urlStr)) {
+			if (decode_data_uri(urlStr, buffer)) {
 				*outStatus = HTTPClient::RESPONSE_OK;
 				return buffer;
 			}
-			ERR_PRINT(String("Invalid data URI format: ") + url);
+			ERR_PRINT("Unsupported data: URI; only base64 content is supported");
 			*outStatus = HTTPClient::RESPONSE_BAD_REQUEST;
 			return PackedByteArray();
 		}

@@ -22,6 +22,7 @@ using namespace godot;
 #endif
 
 #include "BRThreadPool.h"
+#include "DataUri.h"
 #include "RedactCredentials.h"
 #include <curl/curl.h>
 #include <cstddef>
@@ -158,6 +159,16 @@ private:
 		*outStatus = 0;
 		outHeaders->clear();
 		PackedByteArray buffer;
+		if (is_data_uri(url)) {
+			// curl has no data: scheme, so decode the content here.
+			if (decode_data_uri(url, buffer)) {
+				*outStatus = HTTPClient::RESPONSE_OK;
+			} else {
+				ERR_PRINT("Unsupported data: URI; only base64 content is supported");
+				*outStatus = HTTPClient::RESPONSE_BAD_REQUEST;
+			}
+			return buffer;
+		}
 		CURL* handle = ThreadCurlHandle::acquire();
 		if (handle == nullptr) {
 			ERR_PRINT(String("Could not create a curl handle for: ") + String::utf8(redact_credentials(url).c_str()));
