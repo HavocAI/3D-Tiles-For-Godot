@@ -23,6 +23,7 @@ using namespace godot;
 
 #include "BRThreadPool.h"
 #include <curl/curl.h>
+#include <cstddef>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -91,12 +92,13 @@ public:
 		this->send_request_same_thread(url, HTTPClient::METHOD_GET, callback, headers);
 	}
 
-	void send_request(const char* url, HTTPClient::Method method, const HighLevelResponseCallback_t& callback, const std::vector<CesiumHeader_t>& headers) {
+	/// Sends body too, with any method but GET and HEAD.
+	void send_request(const char* url, HTTPClient::Method method, const HighLevelResponseCallback_t& callback, const std::vector<CesiumHeader_t>& headers, const std::vector<std::byte>& body = {}) {
 		// Everything the request needs is captured by value: this returns before the request runs.
-		this->m_threadPool.enqueue([this, urlCopy = std::string(url), method, headers, callback] {
+		this->m_threadPool.enqueue([this, urlCopy = std::string(url), method, headers, body, callback] {
 			long responseCode = 0;
 			std::vector<CesiumHeader_t> responseHeaders;
-			PackedByteArray packedData = this->pull_url(urlCopy.c_str(), method, &responseCode, headers, &responseHeaders);
+			PackedByteArray packedData = this->pull_url(urlCopy.c_str(), method, &responseCode, headers, &responseHeaders, body);
 			callback(responseCode, packedData, responseHeaders);
 		});
 	}
@@ -115,7 +117,8 @@ public:
 
 private:
 	static void configure_http_method(CURL* handle, HTTPClient::Method method) {
-		// Requests never carry a body here, so make sure curl does not try to read one (from stdin).
+		// pull_url sets any body afterwards; without one, make sure curl does not try to read one
+		// (from stdin).
 		switch (method) {
 			case HTTPClient::METHOD_GET:
 				break;
@@ -150,7 +153,7 @@ private:
 		}
 	}
 
-	PackedByteArray pull_url(const char *url, HTTPClient::Method method, long *outStatus, const std::vector<CesiumHeader_t> &headers, std::vector<CesiumHeader_t> *outHeaders) {
+	PackedByteArray pull_url(const char *url, HTTPClient::Method method, long *outStatus, const std::vector<CesiumHeader_t> &headers, std::vector<CesiumHeader_t> *outHeaders, const std::vector<std::byte> &body = {}) {
 		*outStatus = 0;
 		outHeaders->clear();
 		PackedByteArray buffer;
@@ -170,6 +173,11 @@ private:
 		curl_easy_setopt(handle, CURLOPT_HEADERDATA, outHeaders);
 		curl_easy_setopt(handle, CURLOPT_ACCEPT_ENCODING, "");
 		configure_http_method(handle, method);
+		if (!body.empty() && method != HTTPClient::METHOD_GET && method != HTTPClient::METHOD_HEAD) {
+			// With CURLOPT_CUSTOMREQUEST (PUT, PATCH, ...) curl sends this body with that method.
+			curl_easy_setopt(handle, CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));
+			curl_easy_setopt(handle, CURLOPT_COPYPOSTFIELDS, reinterpret_cast<const char*>(body.data()));
+		}
 
 		curl_slist* curlHeaders = nullptr;
 		{

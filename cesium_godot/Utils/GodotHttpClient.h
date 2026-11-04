@@ -17,6 +17,8 @@ using namespace godot;
 #endif
 
 #include "BRThreadPool.h"
+#include <cstddef>
+#include <cstring>
 #include <functional>
 #include <vector>
 #include <string>
@@ -57,15 +59,16 @@ public:
 		send_request_same_thread(url, HTTPClient::METHOD_GET, callback, headers);
 	}
 
-	void send_request(const char* url, HTTPClient::Method method, const GodotResponseCallback_t& callback, const std::vector<GodotHeader_t>& headers) {
+	/// Sends requestBody too, with any method but GET and HEAD.
+	void send_request(const char* url, HTTPClient::Method method, const GodotResponseCallback_t& callback, const std::vector<GodotHeader_t>& headers, const std::vector<std::byte>& requestBody = {}) {
 		std::string urlCopy = url;
 		std::vector<GodotHeader_t> allHeaders = m_defaultHeaders;
 		allHeaders.insert(allHeaders.end(), headers.begin(), headers.end());
 
-		m_threadPool.enqueue([this, urlCopy, method, callback, allHeaders] {
+		m_threadPool.enqueue([this, urlCopy, method, callback, allHeaders, requestBody] {
 			int32_t responseCode = 0;
 			std::vector<GodotHeader_t> responseHeaders;
-			PackedByteArray body = perform_request(urlCopy.c_str(), method, &responseCode, allHeaders, &responseHeaders);
+			PackedByteArray body = perform_request(urlCopy.c_str(), method, &responseCode, allHeaders, &responseHeaders, requestBody);
 			callback(responseCode, body, responseHeaders);
 		});
 	}
@@ -140,7 +143,7 @@ private:
 		return parts;
 	}
 
-	PackedByteArray perform_request(const char* url, HTTPClient::Method method, int32_t* outStatus, const std::vector<GodotHeader_t>& headers, std::vector<GodotHeader_t>* outHeaders) {
+	PackedByteArray perform_request(const char* url, HTTPClient::Method method, int32_t* outStatus, const std::vector<GodotHeader_t>& headers, std::vector<GodotHeader_t>* outHeaders, const std::vector<std::byte>& requestBody = {}) {
 		PackedByteArray buffer;
 		*outStatus = 0;
 
@@ -217,7 +220,15 @@ private:
 		}
 
 		// Send request
-		Error requestErr = http->request(method, String(parts.path.c_str()), godotHeaders);
+		Error requestErr = Error::OK;
+		if (!requestBody.empty() && method != HTTPClient::METHOD_GET && method != HTTPClient::METHOD_HEAD) {
+			PackedByteArray bodyBytes;
+			bodyBytes.resize(static_cast<int64_t>(requestBody.size()));
+			memcpy(bodyBytes.ptrw(), requestBody.data(), requestBody.size());
+			requestErr = http->request_raw(method, String(parts.path.c_str()), godotHeaders, bodyBytes);
+		} else {
+			requestErr = http->request(method, String(parts.path.c_str()), godotHeaders);
+		}
 		if (requestErr != Error::OK) {
 			ERR_PRINT(String("Failed to send request to: ") + url + " error: " + itos(static_cast<int>(requestErr)));
 			*outStatus = 0;
