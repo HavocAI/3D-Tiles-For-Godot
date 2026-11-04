@@ -117,7 +117,7 @@ CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> NetworkAssetAcc
 	this->m_httpClient.send_request(
 			url.c_str(),
 			method,
-			[url, p_promise = std::move(p_promise)](int32_t responseCode, const PackedByteArray &body) mutable {
+			[url, headers, p_promise = std::move(p_promise)](int32_t responseCode, const PackedByteArray &body, const std::vector<THeader> &responseHeaderList) mutable {
 				// For file:// URLs, libcurl returns response code 0 on success (no HTTP layer).
 				// Treat code 0 with a non-empty body as a successful response.
 				const bool isFileUrl = url.rfind("file://", 0) == 0;
@@ -137,19 +137,29 @@ CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> NetworkAssetAcc
 					}
 				}
 
-				std::string contentType = "application/octet-stream";
-				CesiumAsync::HttpHeaders headers = { { "content-type", contentType } };
+				// Pass the server's headers on: the request cache (CachingAssetAccessor) only stores
+				// responses whose Cache-Control, Expires, ETag or Last-Modified headers allow it. A
+				// header sent more than once becomes one comma-separated value, as HTTP allows.
+				CesiumAsync::HttpHeaders responseHeaders;
+				for (const THeader &header : responseHeaderList) {
+					auto [existing, inserted] = responseHeaders.emplace(header);
+					if (!inserted) {
+						existing->second += ", " + header.second;
+					}
+				}
+				const std::string contentType =
+						responseHeaders.try_emplace("content-type", "application/octet-stream").first->second;
 
 				auto assetResponse = std::make_unique<LocalAssetResponse>(
 						responseCode,
 						contentType,
-						headers,
+						responseHeaders,
 						body);
 
 				auto assetRequest = std::make_shared<LocalAssetRequest>(
 						"GET",
 						url,
-						headers,
+						CesiumAsync::HttpHeaders(headers.begin(), headers.end()),
 						std::move(assetResponse));
 				p_promise.resolve(assetRequest);
 			},

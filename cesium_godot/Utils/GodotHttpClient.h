@@ -25,8 +25,9 @@ using namespace godot;
 #include <thread>
 #include <chrono>
 
-using GodotResponseCallback_t = std::function<void(int32_t, const PackedByteArray&)>;
 using GodotHeader_t = std::pair<std::string, std::string>;
+/// Called with the status code, the body and the response's headers, in the order received.
+using GodotResponseCallback_t = std::function<void(int32_t, const PackedByteArray&, const std::vector<GodotHeader_t>&)>;
 
 /// @brief HTTP client using Godot's native HTTPClient instead of libcurl.
 /// This provides better cross-platform compatibility, especially on macOS
@@ -63,8 +64,9 @@ public:
 
 		m_threadPool.enqueue([this, urlCopy, method, callback, allHeaders] {
 			int32_t responseCode = 0;
-			PackedByteArray body = perform_request(urlCopy.c_str(), method, &responseCode, allHeaders);
-			callback(responseCode, body);
+			std::vector<GodotHeader_t> responseHeaders;
+			PackedByteArray body = perform_request(urlCopy.c_str(), method, &responseCode, allHeaders, &responseHeaders);
+			callback(responseCode, body, responseHeaders);
 		});
 	}
 
@@ -73,8 +75,9 @@ public:
 		allHeaders.insert(allHeaders.end(), headers.begin(), headers.end());
 
 		int32_t responseCode = 0;
-		PackedByteArray body = perform_request(url, method, &responseCode, allHeaders);
-		callback(responseCode, body);
+		std::vector<GodotHeader_t> responseHeaders;
+		PackedByteArray body = perform_request(url, method, &responseCode, allHeaders, &responseHeaders);
+		callback(responseCode, body, responseHeaders);
 	}
 
 	void add_default_header(const GodotHeader_t& header) {
@@ -137,7 +140,7 @@ private:
 		return parts;
 	}
 
-	PackedByteArray perform_request(const char* url, HTTPClient::Method method, int32_t* outStatus, const std::vector<GodotHeader_t>& headers) {
+	PackedByteArray perform_request(const char* url, HTTPClient::Method method, int32_t* outStatus, const std::vector<GodotHeader_t>& headers, std::vector<GodotHeader_t>* outHeaders) {
 		PackedByteArray buffer;
 		*outStatus = 0;
 
@@ -243,6 +246,16 @@ private:
 		}
 
 		*outStatus = http->get_response_code();
+		const PackedStringArray responseHeaders = http->get_response_headers();
+		for (int64_t i = 0; i < responseHeaders.size(); i++) {
+			const String line = responseHeaders[i];
+			const int64_t colon = line.find(":");
+			if (colon > 0) {
+				outHeaders->emplace_back(
+					line.substr(0, colon).strip_edges().utf8().get_data(),
+					line.substr(colon + 1).strip_edges().utf8().get_data());
+			}
+		}
 
 		// Read response body
 		while (http->get_status() == HTTPClient::STATUS_BODY) {

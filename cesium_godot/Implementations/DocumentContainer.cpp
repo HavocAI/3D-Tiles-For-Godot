@@ -147,7 +147,7 @@ void DocumentContainer::load_image(const char* src, const char* baseurl, bool re
 	if (this->m_imageCache.find(HashFnv1a(fetchUrl)) != this->m_imageCache.end()) {
 		return;
 	}
-	this->m_httpClient.send_get_same_thread(src, [fetchUrl, this](int32_t status, const PackedByteArray& body) {
+	this->m_httpClient.send_get_same_thread(src, [fetchUrl, this](int32_t status, const PackedByteArray& body, const std::vector<std::pair<std::string, std::string>>&) {
         if (status >= HTTPClient::ResponseCode::RESPONSE_BAD_REQUEST) {
 			std::string tmpStr(reinterpret_cast<const char*>(body.ptr()), body.size());
 	        String bodyStr = tmpStr.c_str();

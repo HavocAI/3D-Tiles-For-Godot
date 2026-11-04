@@ -72,6 +72,8 @@ using namespace godot;
 #include "CesiumAsync/GunzipAssetAccessor.h"
 #include <CesiumAsync/CachingAssetAccessor.h>
 #include "CesiumAsync/SqliteCache.h"
+#include <memory>
+#include <mutex>
 
 
 static int32_t tileCount = 0;
@@ -616,8 +618,18 @@ void Cesium3DTileset::load_tileset()
 
 }
 
-Cesium3DTilesSelection::TilesetExternals Cesium3DTileset::create_tileset_externals()
+/// The request cache every tileset shares, as long as any tileset uses it. Each SqliteCache is its
+/// own connection to the database file and sets no busy timeout, so with one per tileset a write
+/// fails whenever another tileset is writing; one instance serializes them.
+static std::shared_ptr<CesiumAsync::SqliteCache> get_request_cache()
 {
+	static std::mutex s_mutex;
+	static std::weak_ptr<CesiumAsync::SqliteCache> s_cache;
+	std::lock_guard<std::mutex> lock(s_mutex);
+	std::shared_ptr<CesiumAsync::SqliteCache> cache = s_cache.lock();
+	if (cache != nullptr) {
+		return cache;
+	}
 	const String cachePath = "user://cache";
 	Ref<DirAccess> userAccess = DirAccess::open("user://");
 	Error err = userAccess->make_dir_recursive(cachePath);
@@ -625,10 +637,16 @@ Cesium3DTilesSelection::TilesetExternals Cesium3DTileset::create_tileset_externa
 		ERR_PRINT("Could not create / use temporary cache path!");
 	}
 	String globalCachePath = ProjectSettings::get_singleton()->globalize_path(cachePath) + "/cesium-request-cache.sqlite";
-	constexpr int32_t requestsPerCachePrune = 10000;
 	constexpr uint64_t maxItems = 4096 * 5;
+	cache = std::make_shared<CesiumAsync::SqliteCache>(spdlog::default_logger(), globalCachePath.utf8().get_data(), maxItems);
+	s_cache = cache;
+	return cache;
+}
 
-	auto cache = std::make_shared<CesiumAsync::SqliteCache>(spdlog::default_logger(), globalCachePath.utf8().get_data(), maxItems);
+Cesium3DTilesSelection::TilesetExternals Cesium3DTileset::create_tileset_externals()
+{
+	constexpr int32_t requestsPerCachePrune = 10000;
+	auto cache = get_request_cache();
 	auto simpleAccessor = std::make_shared<NetworkAssetAccessor>();
 	auto cachedAccessor = std::make_shared<CesiumAsync::CachingAssetAccessor>(spdlog::default_logger(), simpleAccessor, cache, requestsPerCachePrune);
 	auto gunzipAccessor = std::make_shared<CesiumAsync::GunzipAssetAccessor>(
