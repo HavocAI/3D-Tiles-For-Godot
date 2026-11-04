@@ -22,6 +22,7 @@ using namespace godot;
 #endif
 
 #include "BRThreadPool.h"
+#include "RedactCredentials.h"
 #include <curl/curl.h>
 #include <cstddef>
 #include <cstring>
@@ -159,7 +160,7 @@ private:
 		PackedByteArray buffer;
 		CURL* handle = ThreadCurlHandle::acquire();
 		if (handle == nullptr) {
-			ERR_PRINT(String("Could not create a curl handle for: ") + String::utf8(url));
+			ERR_PRINT(String("Could not create a curl handle for: ") + String::utf8(redact_credentials(url).c_str()));
 			return buffer;
 		}
 
@@ -195,7 +196,7 @@ private:
 		if (code == CURLE_OK) {
 			curl_easy_getinfo(handle, CURLINFO_RESPONSE_CODE, outStatus);
 		} else {
-			ERR_PRINT(String("Could not make request to: ") + String::utf8(url) + String(" error: ") + itos(code) + " (" + curl_easy_strerror(code) + ")");
+			ERR_PRINT(String("Could not make request to: ") + String::utf8(redact_credentials(url).c_str()) + String(" error: ") + itos(code) + " (" + curl_easy_strerror(code) + ")");
 			buffer = PackedByteArray();
 			outHeaders->clear();
 		}

@@ -17,6 +17,7 @@ using namespace godot;
 #endif
 
 #include "BRThreadPool.h"
+#include "RedactCredentials.h"
 #include <cstddef>
 #include <cstring>
 #include <functional>
@@ -143,11 +144,13 @@ private:
 		return parts;
 	}
 
-	PackedByteArray perform_request(const char* url, HTTPClient::Method method, int32_t* outStatus, const std::vector<GodotHeader_t>& headers, std::vector<GodotHeader_t>* outHeaders, const std::vector<std::byte>& requestBody = {}) {
+	PackedByteArray perform_request(const char* requestUrl, HTTPClient::Method method, int32_t* outStatus, const std::vector<GodotHeader_t>& headers, std::vector<GodotHeader_t>* outHeaders, const std::vector<std::byte>& requestBody = {}) {
 		PackedByteArray buffer;
 		*outStatus = 0;
 
-		std::string urlStr(url);
+		std::string urlStr(requestUrl);
+		// For messages: the URL without its credentials.
+		const String url = String::utf8(redact_credentials(urlStr).c_str());
 
 		// Handle data: URIs (base64-encoded inline data, used by Cesium credit logos)
 		if (urlStr.rfind("data:", 0) == 0) {

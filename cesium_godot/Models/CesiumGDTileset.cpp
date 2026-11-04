@@ -19,7 +19,6 @@
 #include "godot_cpp/variant/transform3d.hpp"
 #include <cstdint>
 #include <type_traits>
-#define SPDLOG_COMPILED_LIB
 #include "Models/CesiumGlobe.h"
 #define SPDLOG_FMT_EXTERNAL
 
@@ -72,6 +71,7 @@ using namespace godot;
 #include "CesiumAsync/GunzipAssetAccessor.h"
 #include <CesiumAsync/CachingAssetAccessor.h>
 #include "CesiumAsync/SqliteCache.h"
+#include "../Utils/RedactCredentials.h"
 #include <memory>
 #include <mutex>
 
@@ -224,7 +224,7 @@ Cesium3DTileset::Cesium3DTileset()
 	this->m_tilesetConfig->contentOptions.ktx2TranscodeTargets = { supportedFormats, true };
 
 	this->m_tilesetConfig->options.loadErrorCallback = [=](const Cesium3DTilesSelection::TilesetLoadFailureDetails& failData) {
-		ERR_PRINT(String("Failed to load a given tileset, error: ") + failData.message.c_str());
+		ERR_PRINT(String("Failed to load a given tileset, error: ") + String::utf8(redact_credentials(failData.message).c_str()));
 	};
 
 	this->m_signalingThreadPool.init(5);

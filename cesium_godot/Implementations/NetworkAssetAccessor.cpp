@@ -1,6 +1,7 @@
 #include "NetworkAssetAccessor.h"
 #include "../Models/LocalAssetResponse.h"
 #include "../Models/LocalAssetRequest.h"
+#include "../Utils/RedactCredentials.h"
 #include "CesiumAsync/AsyncSystem.h"
 #include "godot_cpp/classes/engine.hpp"
 #include "godot_cpp/variant/packed_byte_array.hpp"
@@ -127,7 +128,7 @@ CesiumAsync::Future<std::shared_ptr<CesiumAsync::IAssetRequest>> NetworkAssetAcc
 					const String errorMessage = String("The underlying request failed with code: ") + itos(responseCode);
 					const char *strPtr = reinterpret_cast<const char *>(body.ptr());
 					String bodyStr = strPtr;
-					ERR_PRINT(errorMessage + String("\nURL: ") + String(url.c_str()) + String("\nFailed request's body: ") + bodyStr);
+					ERR_PRINT(errorMessage + String("\nURL: ") + String::utf8(redact_credentials(url).c_str()) + String("\nFailed request's body: ") + bodyStr);
 					if (responseCode == HTTPClient::ResponseCode::RESPONSE_UNAUTHORIZED) {
 						ERR_PRINT("Access denied - check CesiumION token!");
 					}
